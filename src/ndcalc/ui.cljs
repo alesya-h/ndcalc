@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [ndcalc.engine :as e]
             [ndcalc.state :as s]
-            [ndcalc.demo :as demo]))
+            [ndcalc.demo :as demo]
+            [ndcalc.preview :as preview]))
 
 (defn icon [kind & [size]]
   (let [paths {:cube ["M12 3 21 8v9l-9 5-9-5V8Z" "m3 8 9 5 9-5M12 13v9M12 3v10"]
@@ -68,7 +69,7 @@
   [["MOVE" [["← ↑ ↓ →" "Move in the visible plane"] ["h j k l" "Vim-style movement"] ["Tab / ⇧Tab" "Next / previous column"]]]
    ["DIMENSIONS" [["1–9" "Rotate a dimension into view"] ["0" "Rotate the null dimension"] ["g15 ↵" "Go to X coordinate 15"] ["G-15 ↵" "Go to Y coordinate −15"] ["b / B" "First active column / row"] ["e / E" "Last active column / row"]]]
    ["EDIT" [["↵ / i" "Edit the current cell"] ["f" "Edit as a formula"] ["v / Ctrl+v" "Toggle visual-block selection"] ["⇧ + arrows" "Extend a selection"] ["y / p" "Copy / paste cells"] ["Del" "Clear cell or selection"] ["d / D" "Clear current column / row"] ["u / Ctrl+z" "Undo"] ["Ctrl+⇧z" "Redo"] ["Ctrl+↵" "Apply an open editor"] ["Esc" "Cancel / normal mode"]]]
-   ["PANELS" [["n" "New named cell"] ["c" "Conditional formatting"] ["t" "Plane / read-only 3D"] ["?" "Toggle this cheatsheet"]]]])
+   ["PANELS" [["n" "New named cell"] ["c" "Conditional formatting"] ["t" "Plane / read-only 3D"] ["PgUp / PgDn" "Move Z in 3D"] ["?" "Toggle this cheatsheet"]]]])
 
 (defn help-sidebar []
   [:aside.help-sidebar {:aria-label "Keyboard shortcuts"}
@@ -79,12 +80,7 @@
      [:section.shortcut-section [:h3 heading]
       (for [[key description] keys]
         ^{:key key} [:div.shortcut [:kbd key] [:span description]])])
-   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". In 3D, editing is disabled."]])
-
-(defn set-slice! [dimension value]
-  (when (e/safe-integer? value)
-    (swap! s/app assoc :anchor nil :mode :normal :named-focus nil)
-    (s/select! (e/set-axis (get-in @s/app [:doc :view :coord]) dimension value) false)))
+   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". Visual selection survives plane and slice changes, selecting every cell between its n-dimensional corners. In 3D, editing is disabled."]])
 
 (defn slice-input [dimension value]
   ;; Keep intermediate text (notably "-") so controlled inputs allow negative typing.
@@ -97,7 +93,7 @@
                           (let [text (.. event -target -value)]
                             (reset! draft text)
                             (when (re-matches #"-?\d+" text)
-                              (set-slice! dimension (js/Number text)))))
+                              (s/set-slice! dimension (js/Number text)))))
              :on-key-down #(when (= "Enter" (.-key %)) (.blur (.-target %)))
              :on-blur (fn [_]
                         (when (and @draft
@@ -186,7 +182,7 @@
             (for [a xs]
               (let [c (e/plane-coord current mapping a b) cell (e/cell-at doc c)
                     current? (and (not named-focus) (= c current))
-                    selected? (and anchor (e/in-block? anchor current mapping c))
+                    selected? (and anchor (e/in-block? anchor current c))
                     active? (e/active? bounds c)]
                 ^{:key a}
                 [:td {:role "gridcell" :tab-index (if current? 0 -1)
@@ -198,40 +194,111 @@
                  [format-content runtime c cell]]))])]]])
     (finally (when @observer (.disconnect @observer)))))
 
+(defn cube-slider [label key low high]
+  [:label.tilt-control label
+   [:input {:type "range" :min low :max high :value (get (s/cube-options) key)
+            :aria-label (str "3D " (str/lower-case label))
+            :on-change #(s/set-cube-option! key (js/Number (.. % -target -value)))}]])
+
+(defn cube-layer [context window options scene layer at-z stacked?]
+  (let [{:keys [doc current axes runtime bounds anchor]} context
+        [x y z] axes [xs ys _] (:ranges window) [nx _ nz] (:shape window)]
+    [:section {:class (if stacked? "cube-layer" "cube-slice")
+               :aria-label (str "D" z " slice " at-z)
+               :style (merge {:width (:width scene)}
+                             (if stacked?
+                               {:height (:height scene)
+                                :transform (str "translateZ(" (* (- layer (/ (dec nz) 2)) (:gap options)) "px)")}
+                               {:zoom (/ (:zoom options) 100)}))}
+     [:div.cube-layer-label
+      {:style (when stacked? {:transform (str "rotateZ(" (- (:rotation options)) "deg) rotateX(" (- (:tilt options)) "deg)")})}
+      (str "D" z " = " at-z)]
+     [:div.cube-layer-grid {:style {:grid-template-columns (str "repeat(" nx ", minmax(0,1fr))")
+                                    :grid-auto-rows (str (:row-height scene) "px")}}
+      (for [b ys a xs]
+        (let [at (-> current (e/set-axis x a) (e/set-axis y b) (e/set-axis z at-z))
+              selected? (and anchor (e/in-block? anchor current at))]
+          ^{:key (e/coord-key at)}
+          [:button {:type "button" :class (str "cube-cell " (when-not (e/active? bounds at) "out-of-bounds ")
+                                               (when selected? "selected ") (when (= at current) "cube-current"))
+                    :tab-index (if (= at current) 0 -1) :aria-label (e/coord-key at) :aria-pressed (= at current)
+                    :data-coord (e/coord-key at)
+                    :on-click (fn [event] (.focus (.-currentTarget event)) (s/select! at (.-shiftKey event)))
+                    :on-double-click #(do (s/select! at false) (s/toggle-3d!))}
+           [format-content runtime at (e/cell-at doc at)]
+           [:span.cube-coord (e/coord-key at)]]))]]))
+
 (defn cube []
-  (let [{:keys [doc cube-axes cube-tilt]} @s/app [x y z] cube-axes c (get-in doc [:view :coord])
-        runtime (s/runtime) bounds (e/active-bounds doc)
-        start (fn [d] (max (- js/Number.MAX_SAFE_INTEGER)
-                            (min (- js/Number.MAX_SAFE_INTEGER 2) (dec (e/axis-value c d)))))
-        start-x (start x) start-y (start y)
-        zs (range (start z) (+ (start z) 3))]
-    [:div.cube-view.sheet-scope
-     [:div.cube-controls
-      (for [[i label] (map-indexed vector ["X" "Y" "Z"])]
-        ^{:key i}
-        [:label.axis-select [:span label]
-         [:select {:value (nth cube-axes i) :aria-label (str "3D " label " dimension")
-                   :on-change #(s/set-cube-axis! i (js/Number (.. % -target -value)))}
-          (for [d (range 1 (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (str "D" d)])]])
-      [:label.tilt-control "Tilt" [:input {:type "range" :min 15 :max 70 :value cube-tilt :aria-label "3D tilt"
-                                          :on-change #(swap! s/app assoc :cube-tilt (js/Number (.. % -target -value)))}]]
-      [:span.readonly-tag "READ ONLY"]]
-     [:div.cube-stage
-      [:div.cube-stack {:style {:transform (str "rotateX(" cube-tilt "deg) rotateZ(-28deg)")}}
-       (for [[layer at-z] (map-indexed vector zs)]
-         ^{:key at-z}
-         [:div.cube-layer {:style {:transform (str "translateZ(" (* layer 92) "px)")}}
-          [:span.cube-layer-label (str "D" z " = " at-z)]
-          [:div.cube-layer-grid
-           (for [b (range start-y (+ start-y 3)) a (range start-x (+ start-x 3))]
-             (let [at (-> c (e/set-axis x a) (e/set-axis y b) (e/set-axis z at-z))
-                   cell (e/cell-at doc at)]
-               ^{:key (e/coord-key at)}
-               [:div {:class (str "cube-cell " (when-not (e/active? bounds at) "out-of-bounds ") (when (= at c) "cube-current"))
-                      :data-coord (e/coord-key at)}
-                [format-content runtime at cell]
-                [:span.cube-coord (e/coord-key at)]]))]])]]
-     [:p.cube-caption "A 3 × 3 × 3 window around the current cell. Arrow keys move the center; dimension coordinates choose the slice. Hover cells for values and source."]]))
+  (r/with-let [stage-size (r/atom [800 500]) node (atom nil) observer (atom nil)
+               ref-fn (fn [el]
+                        (when-not (identical? el @node)
+                          (when @observer (.disconnect @observer))
+                          (reset! node el)
+                          (when el
+                            (reset! observer
+                                    (js/ResizeObserver.
+                                      (fn [_ _]
+                                        (let [size [(.-clientWidth el) (.-clientHeight el)]]
+                                          (when-not (= size @stage-size) (reset! stage-size size))))))
+                            (.observe @observer el))) nil)]
+    (let [{:keys [doc cube-axes cube-fit anchor]} @s/app options (s/cube-options)
+          window (s/cube-window) scene (preview/scene (:shape window) options @stage-size)
+          stacked? (= "stack" (:layout options))
+          context {:doc doc :current (get-in doc [:view :coord]) :axes cube-axes :runtime (s/runtime)
+                   :bounds (e/active-bounds doc) :anchor anchor}]
+      [:div {:class (str "cube-view sheet-scope " (if (:labels options) "cube-with-labels" "cube-no-labels"))}
+       [:div.cube-controls
+        (for [[i label] (map-indexed vector ["X" "Y" "Z"])]
+          ^{:key i}
+          [:div.cube-axis-control
+           [:label.axis-select [:span label]
+            [:select {:value (nth cube-axes i) :aria-label (str "3D " label " dimension")
+                      :on-change #(s/set-cube-axis! i (js/Number (.. % -target -value)))}
+             (for [d (range 1 (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (str "D" d)])]]
+           [:label.cube-size "size"
+            [:input {:type "number" :min 1 :max preview/max-axis-size :step 1 :value (nth (:size options) i)
+                     :aria-label (str "3D " label " size")
+                     :on-change #(s/set-cube-size! i (js/Number (.. % -target -value)))}]]])
+        [:button.button.compact {:on-click s/fit-cube! :disabled (nil? (:bounds context))} "Fit active bounds"]
+        [:label.cube-check
+         [:input {:type "checkbox" :checked (not cube-fit) :aria-label "3D follow current cell"
+                  :on-change #(if (.. % -target -checked) (swap! s/app assoc :cube-fit false) (s/fit-cube!))}]
+         "Follow cell"]
+        [:div.segmented
+         (for [[layout label] [["stack" "Stack"] ["slices" "Slices"]]]
+           ^{:key layout}
+           [:button {:class (when (= layout (:layout options)) "active") :aria-pressed (= layout (:layout options))
+                     :on-click #(s/set-cube-option! :layout layout)} label])]
+        [:label.cube-check
+         [:input {:type "checkbox" :checked (:labels options) :aria-label "3D show labels"
+                  :on-change #(s/set-cube-option! :labels (.. % -target -checked))}] "Labels"]
+        [:span.readonly-tag "READ ONLY"]]
+       [:div.cube-camera-controls
+        [cube-slider "Tilt" :tilt 15 80] [cube-slider "Rotation" :rotation -180 180]
+        [cube-slider "Zoom" :zoom 25 200] [cube-slider "Layer gap" :gap 16 160]
+        [:button.button.compact {:on-click #(swap! s/app assoc :cube-options
+                                                  (merge (s/cube-options) (select-keys preview/default-options [:tilt :rotation :zoom :gap])))} "Reset camera"]
+        [:button.button.compact {:on-click #(s/move-depth! -1) :aria-label "Previous Z slice"} "Z −"]
+        [:button.button.compact {:on-click #(s/move-depth! 1) :aria-label "Next Z slice"} "Z +"]
+        [:button.button.compact {:on-click s/toggle-3d!} "Open in plane"]
+        [:span.cube-count (str (:total window) " cells")]]
+       (if stacked?
+         [:div.cube-stage {:ref ref-fn}
+          [:div.cube-stack {:style {:width (:width scene) :height (:height scene)
+                                   :transform (str "translate(-50%, -50%) scale(" (:scale scene) ") rotateX("
+                                                   (:tilt options) "deg) rotateZ(" (:rotation options) "deg)")}}
+           (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
+             ^{:key at-z} [cube-layer context window options scene layer at-z true])]]
+         [:div.cube-slices
+          (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
+            ^{:key at-z} [cube-layer context window options scene layer at-z false])])
+       [:p.cube-caption
+        [:span.cube-ranges (str (str/join " × " (:shape window)) " · "
+                               (str/join " · " (map (fn [label axis start end] (str label " D" axis " " start "…" end))
+                                                    ["X" "Y" "Z"] cube-axes (:start window) (:end window))))]
+        (when (:clipped? window) [:span.preview-limit " · Bounded preview, not the entire active volume."])
+        [:br] "Arrows select; PgUp/PgDn move Z. Click a cell to select, double-click to open its plane. Hover for value/source."]])
+    (finally (when @observer (.disconnect @observer)))))
 
 (defn cell-bar []
   (let [{:keys [doc view anchor]} @s/app c (s/coord) cell (e/cell-at doc c)
@@ -244,10 +311,8 @@
       (if cell (:source cell) [:span.placeholder "Press Enter to set a value, or f for a formula…"])]
      (when (:error result) [:span.cell-bar-error {:title (:error result)} "Evaluation error"])
      (when anchor
-       (let [[x y] (s/mapping)
-             size (* (inc (abs (- (e/axis-value anchor x) (e/axis-value c x))))
-                     (inc (abs (- (e/axis-value anchor y) (e/axis-value c y)))))]
-         [:span.selection-count (str size " selected")]))]))
+       [:span.selection-count {:title (str "Selection corners: " (e/coord-key anchor) " → " (e/coord-key c))}
+        (str (e/block-size anchor c) " selected")])]))
 
 (defn plane-toolbar []
   (let [{:keys [view doc]} @s/app]
@@ -306,7 +371,9 @@
           [:input {:type "checkbox" :checked (:enabled rule) :disabled (not editable)
                    :aria-label (str "Enable " (:name rule))
                    :on-change #(s/change! (fn [d] (update-in d [:rules index :enabled] not)))}]
-          [:button.rule-name {:on-click #(s/open-rule! rule) :disabled (not editable)} (:name rule)]
+          [:button.rule-name {:on-click #(s/open-rule! rule) :disabled (not editable) :title "Edit formatting rule"} (:name rule)]
+          [:button.button.icon-button.tiny {:on-click #(s/open-rule! rule) :disabled (not editable)
+                                           :aria-label (str "Edit " (:name rule)) :title "Edit formatting rule"} [icon :edit 14]]
           [:button.button.icon-button.tiny {:on-click #(s/reorder-rule! index (dec index)) :disabled (or (not editable) (zero? index)) :aria-label (str "Move " (:name rule) " up")} "↑"]
           [:button.button.icon-button.tiny {:on-click #(s/reorder-rule! index (inc index)) :disabled (or (not editable) (= index (dec (count (:rules doc))))) :aria-label (str "Move " (:name rule) " down")} "↓"]
           [:button.button.icon-button.tiny {:on-click #(s/change! (fn [d] (update d :rules (fn [rules] (vec (remove (fn [r] (= (:id r) (:id rule))) rules))))))
@@ -315,7 +382,9 @@
          [:div.rule-code [:span "apply"] [:code (:value rule)]]
          (when-let [error (:error (nth (:rules (s/runtime)) index))] [:p.inline-error error])])]
      [:button.button.add-rule {:on-click #(s/open-rule! nil) :disabled (not editable)} [icon :plus 16] "Add rule"]
-     [:div.panel-tip [:p "Coordinate predicates receive spread coordinates—or a single string for a named cell. Value predicates return CSS classes or a style string."]]]))
+     [:div.panel-tip
+      [:p "Coordinate predicates receive spread coordinates—or a single string for a named cell. Value predicates return CSS classes or a style string."]
+      [:p "Numeric cells are formatted only inside the active hypercube. Named-cell rules still apply."]]]))
 
 (defn css-panel []
   (let [{:keys [doc css-draft view]} @s/app]
@@ -349,8 +418,8 @@
       [:span {:class (str "mode-badge " (name mode))} (if (= view :cube) "VIEW ONLY" (str/upper-case (name mode)))]
       (if command
         [:div.command-line [:span (if (zero? (:axis command)) "g" "G")] (:text command) [:span.command-caret "▏"] [:small "Enter to jump · Esc to cancel"]]
-        [:span.status-hint (cond (= view :cube) "arrows move center · t for plane · ? for shortcuts"
-                                (= mode :visual) "arrows extend · Enter fill · y copy · Del clear"
+        [:span.status-hint (cond (= view :cube) "arrows select · PgUp/PgDn move Z · t for plane"
+                                (= mode :visual) "arrows / dimensions extend · Enter fill · y copy · Del clear"
                                 :else "Enter to edit · v to select · ? for shortcuts")])]
      [:div.status-right
       [:span.bounds-label {:title "Minimal and maximal populated coordinates, across every dimension"}
@@ -372,9 +441,11 @@
       [:h1 "Tables"] [:span (count docs)]
       [:button.button.primary.new-document {:on-click #(swap! s/app assoc :dialog {:type :create :title "Untitled table" :n 2})}
        [icon :plus 18] "New table"]]
+     [:div.library-examples [:span "Examples"]
+      [:button.button.compact {:on-click #(s/open-document! (demo/demo-document))} "Open the 5D example"]
+      [:button.button.compact {:on-click s/open-color-example!} "Open OKLCH color cube"]]
      (if (empty? docs)
-       [:div.library-empty [:p "No tables."]
-        [:button.button {:on-click #(s/open-document! (demo/demo-document))} "Open the 5D example"]]
+       [:div.library-empty [:p "No tables."]]
        [:div.document-grid
         (for [doc docs]
           ^{:key (:id doc)}
@@ -446,7 +517,8 @@
 (defn rule-editor []
   (let [rule (:rule-editor @s/app)]
     [modal-shell "Formatting rule" "Match coordinates first, then style the computed value."
-     [:div.modal-content
+     [:div.modal-content {:on-key-down #(when (and (or (.-ctrlKey %) (.-metaKey %)) (= "Enter" (.-key %)))
+                                         (.preventDefault %) (s/save-rule!))}
       [:label.field "RULE NAME" [:input {:value (:name rule) :auto-focus true :aria-label "Rule name"
                                         :on-change #(swap! s/app assoc-in [:rule-editor :name] (.. % -target -value))}]]
       [:label.field "COORDINATE PREDICATE · RETURNS BOOLEAN"
@@ -454,8 +526,11 @@
                                :on-change #(swap! s/app assoc-in [:rule-editor :coord] (.. % -target -value))}]]
       [:label.field "VALUE PREDICATE · RETURNS CLASSES OR CSS"
        [:textarea.code-editor {:value (:value rule) :rows 3 :spell-check false :aria-label "Value predicate"
-                               :on-change #(swap! s/app assoc-in [:rule-editor :value] (.. % -target -value))
-                               :on-key-down #(when (and (or (.-ctrlKey %) (.-metaKey %)) (= "Enter" (.-key %))) (.preventDefault %) (s/save-rule!))}]]
+                               :on-change #(swap! s/app assoc-in [:rule-editor :value] (.. % -target -value))}]]
+      [:label.rule-enabled
+       [:input {:type "checkbox" :checked (:enabled rule) :aria-label "Rule enabled"
+                :on-change #(swap! s/app assoc-in [:rule-editor :enabled] (.. % -target -checked))}]
+       "Enabled"]
       [:p.editor-note "Static style: () => true. Named-cell match: name => name === 'my_named_cell'. Classes: v => ['heading']. Inline style: v => 'color: coral;'."]
       (when (:error rule) [:div.inline-error {:role "alert"} (:error rule)])]
      [:button.button.primary {:on-click s/save-rule!} [icon :check 16] "Apply rule"]
@@ -511,7 +586,7 @@
       [:div.workspace
        (case route :loading [:div.loading-state [icon :cube 42] [:p "Loading…"]]
              :home [home-page] :editor [editor-workspace])]]
-     (when doc [:style (str "@scope (.sheet-scope) {\n" (:css doc) "\n}")])
+     (when doc [:style (str "@scope (.sheet-scope) to (.out-of-bounds) {\n" (:css doc) "\n}")])
      (when editor [cell-editor])
      (when (:rule-editor @s/app) [rule-editor])
      (when dialog [generic-dialog])

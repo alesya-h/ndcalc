@@ -1,6 +1,6 @@
 # ndcalc
 
-An **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. Data is stored in IndexedDB. An empty database opens a 5D example. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
+An **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. Data is stored in IndexedDB. An empty database opens a 5D example. Home always offers fresh copies of the 5D example and an 8×8×8 OKLCH coordinate-color cube. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
 
 ## Run
 
@@ -23,7 +23,7 @@ npm run serve
 Tests:
 
 ```sh
-npm test                       # ClojureScript engine + state tests
+npm test                       # ClojureScript engine, preview + state tests
 npx playwright install chromium # Once, for headless browser tests
 npm run test:e2e                # Keep dev/serve running on port 8080
 # Alternatively, use an already-running debug Chrome:
@@ -65,7 +65,7 @@ A function stored as **Value** is not called automatically. A formula can explic
 
 Display uses stringification: text as-is, JSON for objects/arrays, source for functions, and readable fallbacks for BigInt, symbols, maps, sets, or circular objects. Empty cells display blank; an explicitly stored `undefined` displays `undefined`. React renders these as text, not HTML.
 
-Formulas are synchronous and demand-evaluated. Each content revision has a memoized dependency graph; edits invalidate it, including conditional dependencies and named references. Circular references and evaluation errors appear in cells without breaking the table. There are guards for dependency depth and cell-evaluation count. Prefer pure, deterministic functions. Promises are ordinary values, not awaited spreadsheet calculations.
+Formulas are synchronous and demand-evaluated. Each content revision has a memoized dependency graph; edits invalidate it, including conditional dependencies and named references. Circular references and evaluation errors appear in cells without breaking the table. There are guards for dependency depth and cell-evaluation count per root calculation, rather than per browsing session. Missing coordinates do not accumulate cache entries as you navigate. Prefer pure, deterministic functions. Promises are ordinary values, not awaited spreadsheet calculations.
 
 ## Dimensions and views
 
@@ -94,7 +94,16 @@ The full current coordinate never changes when remapping. Arrow keys move along 
 
 The **active area** is the componentwise minimum/maximum of populated numeric coordinates across the entire hypertable. Named cells do not expand it. Outside this box, cells are dimmed but fully navigable/editable. The grid renders a bounded, responsive window rather than allocating a dense hypertable.
 
-The **3D view** is read-only: three stacked, tilted slices form a 3×3×3 neighborhood around the numeric current cell. Choose distinct X/Y/Z dimensions and a tilt angle. X/Y mapping and navigation stay synchronized with the plane. A null X/Y axis returns to the plane; two non-null axes are needed to enter 3D. Other dimensions remain fixed. It shares computed values and formatting with the plane. Switch back to Plane to edit.
+The **3D view** is read-only and configurable:
+
+- On first entry, it fits populated bounds along the chosen X/Y/Z axes; an empty table starts with an 8×8×8 window. **Fit active bounds** recalculates extents. Large bounds are explicitly marked as a bounded preview, never presented as the entire volume.
+- Set each axis size independently, **1–32**, with a **4,096-cell total limit**. Manually changing a size enables **Follow cell**, which centers the window on the current coordinate. Uncheck it to fit bounds again.
+- **Stack** automatically fits the projected volume to the available space. Adjust tilt, rotation, zoom, and layer gap; **Reset camera** restores camera defaults. **Slices** displays individually readable, scrollable grids without overlapping planes. **Labels** toggles values/coordinates; without labels, formatting fills each cell for a clearer color-volume view.
+- Click a cell to select it, or double-click to return to its editable plane. **Open in plane** returns to the current selection. Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. Hover for the full value and source.
+
+Choose distinct X/Y/Z dimensions. X/Y mapping stays synchronized with the plane; changing axes refits the window when fitting bounds. A null X/Y axis returns to the plane, and two non-null axes are needed to enter 3D. Other dimensions remain fixed. Computed values, selection highlighting, and active-hypercube formatting are shared with the plane.
+
+Home → **Open OKLCH color cube** creates 512 coordinate formulas, `(a,b,c) => [a,b,c]`, over `[0,0,0]` through `[7,7,7]`. A formatting rule maps the value to OKLCH lightness, chroma, and hue. Change D3 in the plane to explore hues, or enter 3D to compare all eight layers. Opening an example creates a new saved document without modifying your existing tables.
 
 Changing the dimension count is supported. Removing a dimension is refused if any populated cell has a non-zero coordinate there; data is never silently discarded.
 
@@ -113,7 +122,7 @@ Press **?** to toggle the left cheatsheet. Shortcuts do not intercept typing in 
 | `e` / `E` | Last active X / Y coordinate |
 | Enter / `i` | Edit current cell or fill selection |
 | `f` | Open editor with Formula selected |
-| `v` / Ctrl+V | Toggle visual-block selection |
+| `v` / Ctrl+V | Toggle n-dimensional visual selection |
 | Shift+arrows / Shift+click | Extend selection |
 | `y` / `p` | Copy / paste cells and their source |
 | Delete / Backspace | Clear current cell or block |
@@ -125,8 +134,13 @@ Press **?** to toggle the left cheatsheet. Shortcuts do not intercept typing in 
 | `n` | Create a named cell |
 | `c` | Show conditional formatting |
 | `t` | Toggle plane / 3D |
+| PgUp / PgDn | Move Z forward / backward in 3D |
 
-Axis operations use lowercase for **X**, uppercase for **Y**. Block operations (`y`, `p`, Delete, Enter) act on the visible selection. Goto accepts signed integers. Copy/paste preserves formula source; coordinate-parameter formulas naturally compute at their new locations. Clipboard and undo history are session-local. Block writes are limited to 10,000 cells; undo retains 100 content edits per open document.
+Axis operations use lowercase for **X**, uppercase for **Y**. Visual selection keeps an n-dimensional anchor and selects the inclusive box between it and the current cell, across **all** dimensions. Switching planes, using the axis dropdowns, changing fixed slice coordinates, or jumping with `g`/`G` preserves the selection. The plane highlights its intersection with that box; the selected-cell count includes hidden slices. Enter/fill, Delete, and `y` operate on the entire box, not just the visible plane. Escape or `v` cancels selection; filling, clearing, or copying finishes it.
+
+For a 2×2×2 cube, start at `[0,0,0]`, press `v`, Right, Down, `3`, Down, then Enter to fill all 8 cells. Continue rotating into dimensions 4 and 5 to select higher-dimensional hyperboxes. Null axes collapse the view, not the selection.
+
+Goto accepts signed integers. Copy/paste preserves formula source and every selected slice, including empty cells. The copied X/Y extents follow the destination X/Y axes; remaining extents map to inactive dimensions in ascending dimension order. Paste is refused if a varying extent cannot fit a target dimension (including null axes and named cells), rather than dropping depth. Coordinate-parameter formulas compute at their new locations. Clipboard and undo history are session-local. The 10,000-cell limit applies to the **total hyperbox volume**; undo retains 100 content edits per open document.
 
 ## Conditional formatting and CSS
 
@@ -144,13 +158,15 @@ v => v > 0 ? ["positive", "bold"] : []
 v => `color: ${v < 0 ? "coral" : "seagreen"}; font-weight: 600;`
 ```
 
-At render time the coordinate predicate runs first. Only a match invokes the value predicate. Arrays accumulate CSS classes; strings accumulate CSS declarations in rule order, with later declarations winning. Invalid rules are isolated and surfaced in cell tooltips / warning markers. Disable, edit, delete, drag, or use ↑/↓ buttons to reorder rules.
+Conditional formatting is evaluated only for numeric cells inside the active hypercube, across every dimension. This includes empty cells between the populated corners, but excludes all cells outside those bounds; an empty table has no active numeric cells. Named-cell rules remain eligible independently of numeric bounds. Bounds and formatting update when cells are added or removed.
 
-**Static formatting** is a rule with `() => true` (or a predicate matching a fixed coordinate). CSS is applied using **Apply CSS** or Ctrl+Enter. The stylesheet uses native `@scope` to affect only table/inspector cells; theme variables such as `var(--accent)`, `var(--green)`, and `var(--red)` are available. Modern Chrome/Firefox with CSS `@scope` support is recommended.
+At render time the coordinate predicate runs first. Only a match invokes the value predicate. Arrays accumulate CSS classes; strings accumulate CSS declarations in rule order, with later declarations winning. Invalid rules are isolated and surfaced in cell tooltips / warning markers. Click a rule's name or its pencil button to edit its name, coordinate predicate, value predicate, and enabled state. Apply (or Ctrl+Enter) replaces that rule in place, preserving its ID and order; Escape cancels. Disable, delete, drag, or use ↑/↓ buttons to reorder rules.
+
+**Static formatting** is a rule with `() => true` (or a predicate matching a fixed coordinate). CSS is applied using **Apply CSS** or Ctrl+Enter. The stylesheet uses native `@scope`, excluding out-of-bounds cell subtrees, to affect only table/inspector cells; theme variables such as `var(--accent)`, `var(--green)`, and `var(--red)` are available. Modern Chrome/Firefox with CSS `@scope` support is recommended.
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, and plane mapping—automatically saves to **IndexedDB**. The theme preference is also stored there. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, and plane mapping—automatically saves to **IndexedDB**. Theme and 3D size/layout/labels/camera preferences are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 
@@ -169,6 +185,7 @@ The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, 
 - `src/ndcalc/storage.cljs` — IndexedDB transactions and preferences.
 - `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview.
 - `src/ndcalc/app.cljs` — React 19 root and startup.
-- `src/ndcalc/demo.cljs` — working 5D sample.
+- `src/ndcalc/demo.cljs` — working 5D sample and 8×8×8 OKLCH color cube.
+- `src/ndcalc/preview.cljs` — bounded 3D windows, active-bound fitting, camera geometry and validated preferences.
 - `test/ndcalc/` — ClojureScript unit tests.
 - `scripts/browser-test.mjs` — isolated Playwright end-to-end workflows.

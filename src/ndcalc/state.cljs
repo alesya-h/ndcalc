@@ -3,13 +3,15 @@
             [clojure.string :as str]
             [ndcalc.engine :as e]
             [ndcalc.storage :as db]
-            [ndcalc.demo :as demo]))
+            [ndcalc.demo :as demo]
+            [ndcalc.preview :as preview]))
 
 (defonce app (r/atom {:route :loading :doc nil :documents [] :theme "dark"
                      :help false :panel :named :mode :normal :anchor nil
                      :named-focus nil :editor nil :dialog nil :command nil
                      :viewport [-1 -1] :grid-size [8 16] :view :plane
-                     :cube-axes [1 2 3] :cube-tilt 56 :undo [] :redo []
+                     :cube-axes [1 2 3] :cube-options preview/default-options :cube-fit false :cube-initialized false
+                     :undo [] :redo []
                      :save-status "Opening storage…" :toast nil :error nil}))
 (defonce runtime-cache (atom nil))
 (defonce last-save (atom (js/Promise.resolve)))
@@ -32,7 +34,7 @@
 (defn mapping [] (get-in @app [:doc :view :mapping]))
 (defn selected-coords []
   (if (:named-focus @app) [(coord)]
-    (e/block-coords (or (:anchor @app) (coord)) (coord) (mapping))))
+    (e/block-coords (or (:anchor @app) (coord)) (coord))))
 
 (defn ensure-visible! []
   (when (and (:doc @app) (not (:named-focus @app)))
@@ -64,19 +66,46 @@
                    (e/set-axis x (+ (e/axis-value c x) dx))
                    (e/set-axis y (+ (e/axis-value c y) dy))) extend?))))
 
+(defn set-slice! [dimension value]
+  (when (e/safe-integer? value)
+    (select! (e/set-axis (get-in @app [:doc :view :coord]) dimension value) false)))
+
+(defn cube-options [] (merge preview/default-options (:cube-options @app)))
+(defn cube-window []
+  (preview/window (:doc @app) (:cube-axes @app) (:size (cube-options)) (:cube-fit @app)))
+
+(defn set-cube-option! [key value]
+  (guard! #(do (swap! app assoc :cube-options (preview/set-option (cube-options) key value))
+               (when (= key :size) (swap! app assoc :cube-fit false)))))
+
+(defn set-cube-size! [axis size]
+  (set-cube-option! :size (assoc (:size (cube-options)) axis size)))
+
+(defn fit-cube! []
+  (if-let [bounds (e/active-bounds (:doc @app))]
+    (let [shape (preview/fit-shape (preview/bounds-shape bounds (:cube-axes @app)))]
+      (swap! app assoc :cube-fit true :cube-initialized true
+             :cube-options (assoc (cube-options) :size shape)))
+    (notify! "No populated numeric cells to fit.")))
+
+(defn move-depth! [delta]
+  (let [z (nth (:cube-axes @app) 2) c (get-in @app [:doc :view :coord])]
+    (select! (e/set-axis c z (+ (e/axis-value c z) delta)) false)))
+
 (defn sync-cube! []
   (when (= :cube (:view @app))
-    (let [[x y] (mapping) z (nth (:cube-axes @app) 2)
+    (let [[x y] (mapping) z (nth (or (:cube-axes @app) [1 2 3]) 2)
           n (get-in @app [:doc :dimensions])]
       (if (or (zero? x) (zero? y))
         (do (swap! app assoc :view :plane) (notify! "A null axis returns to the plane view."))
-        (swap! app assoc :cube-axes [x y (if (#{x y} z)
-                                         (first (remove #{x y} (range 1 (inc n)))) z)])))))
+        (swap! app assoc :cube-axes [x y (if (or (#{x y} z) (not (and (e/safe-integer? z) (<= 1 z n))))
+                                         (first (remove #{x y} (range 1 (inc n)))) z)]))
+      (when (and (= :cube (:view @app)) (:cube-fit @app)) (fit-cube!)))))
 
 (defn switch! [d]
   (when (<= d (get-in @app [:doc :dimensions]))
     (swap! app (fn [s] (-> s
-                           (assoc :anchor nil :mode :normal :named-focus nil)
+                           (assoc :named-focus nil)
                            (update-in [:doc :view :mapping] e/switch-dimension d))))
     (let [[x y] (mapping)]
       (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
@@ -87,7 +116,7 @@
   (let [other (if (= axis 0) 1 0) m (mapping)
         m (if (and (pos? d) (= d (nth m other))) (assoc m other (nth m axis)) m)]
     (swap! app assoc-in [:doc :view :mapping] (assoc m axis d))
-    (swap! app assoc :anchor nil :mode :normal)
+    (swap! app assoc :named-focus nil)
     (ensure-visible!)
     (sync-cube!)))
 
@@ -96,7 +125,8 @@
     (let [[x y] (mapping) z (nth (:cube-axes @app) 2)]
       (swap! app assoc :cube-axes [x y d])
       (cond (= d x) (set-mapping! 0 z)
-            (= d y) (set-mapping! 1 z)))))
+            (= d y) (set-mapping! 1 z))))
+  (when (and (= :cube (:view @app)) (:cube-fit @app)) (fit-cube!)))
 
 (defn change! [f]
   (let [old (:doc @app) new (f old)]
@@ -190,31 +220,40 @@
     (when (and bounds (pos? dimension))
       (jump! axis (nth (if end? (:end bounds) (:start bounds)) (dec dimension))))))
 
+(defn clipboard-axes [dimensions mapping]
+  ;; First two slots follow X/Y (including null axes); remaining dimensions follow
+  ;; ascending dimension order. This preserves planar paste orientation and depth.
+  (into (vec mapping) (remove (set mapping) (range 1 (inc dimensions)))))
+
 (defn yank! []
   (guard!
-    #(let [coords (selected-coords) [x y] (if (:named-focus @app) [0 0] (mapping))
-           origin (first coords) left (e/axis-value origin x) top (e/axis-value origin y)
-           ;; Named cells are a one-cell clipboard.
-           entries (if (:named-focus @app)
-                     [{:dx 0 :dy 0 :cell (e/cell-at (:doc @app) origin)}]
-                     (mapv (fn [c] {:dx (- (e/axis-value c x) left) :dy (- (e/axis-value c y) top)
-                                   :cell (e/cell-at (:doc @app) c)}) coords))]
-       (swap! app assoc :clipboard {:cells entries :width (inc (apply max (map :dx entries)))
-                                   :height (inc (apply max (map :dy entries)))} :anchor nil :mode :normal)
+    #(let [coords (selected-coords) named? (:named-focus @app)
+           origin (first coords)
+           axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions]) (mapping)))
+           shape (if named? [] (e/block-shape origin (last coords)))
+           entries (mapv (fn [c]
+                           {:offset (mapv (fn [axis] (- (e/axis-value c axis) (e/axis-value origin axis))) axes)
+                            :cell (e/cell-at (:doc @app) c)}) coords)]
+       (swap! app assoc :clipboard {:cells entries :shape (mapv (fn [axis] (if (zero? axis) 1 (nth shape (dec axis)))) axes)}
+              :anchor nil :mode :normal)
        (notify! (str "Copied " (count coords) " cell(s); p to paste.")))))
 
 (defn paste! []
   (when (editable?)
     (guard!
-      #(if-let [{:keys [cells width height]} (:clipboard @app)]
-         (let [c (coord) [x y :as m] (mapping)]
-           (when (or (and (or (zero? x) (e/named? c)) (> width 1))
-                     (and (or (zero? y) (e/named? c)) (> height 1)))
-             (e/fail "This selection won't fit in a null dimension or named cell."))
+      #(if-let [{:keys [cells shape]} (:clipboard @app)]
+         (let [c (coord) named? (e/named? c)
+               axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions]) (mapping)))]
+           (when (some (fn [[index size]] (and (> size 1) (zero? (get axes index 0))))
+                       (map-indexed vector shape))
+             (e/fail "This selection won't fit in the target dimensions or named cell."))
            (change! (fn [doc]
-                      (reduce (fn [d {:keys [dx dy cell]}]
-                                (e/put-cell d (if (e/named? c) c
-                                               (e/plane-coord c m (+ (e/axis-value c x) dx) (+ (e/axis-value c y) dy))) cell)) doc cells)))
+                      (reduce (fn [d {:keys [offset cell]}]
+                                (let [target (if named? c
+                                               (reduce (fn [at [index axis]]
+                                                         (e/set-axis at axis (+ (e/axis-value c axis) (get offset index 0))))
+                                                       c (map-indexed vector axes)))]
+                                  (e/put-cell d target cell))) doc cells)))
            (notify! "Pasted. Formulas keep their source and use their new coordinates."))
          (notify! "Nothing copied yet. Use y to copy a cell or block.")))))
 
@@ -244,10 +283,14 @@
 (defn open-document! [doc]
   (swap! app assoc :doc doc :route :editor :anchor nil :mode :normal :named-focus nil
          :editor nil :rule-editor nil :dialog nil :command nil :undo [] :redo [] :view :plane
-         :cube-axes [1 2 3] :css-draft (:css doc))
+         :cube-axes [1 2 3] :cube-fit false :cube-initialized false :css-draft (:css doc))
   (let [[x y] (mapping)]
     (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
   (ensure-visible!))
+
+(defn open-color-example! []
+  (open-document! (demo/color-document))
+  (swap! app assoc :viewport [0 0] :panel :rules))
 
 (defn refresh-documents! []
   (.then (db/all-documents!) #(swap! app assoc :documents %)))
@@ -290,8 +333,11 @@
     (if (and (= :plane (:view @app)) (some zero? (mapping)))
       (notify! "Choose two non-null axes before entering 3D.")
       (do (swap! app update :view #(if (= % :plane) :cube :plane))
-          (swap! app assoc :anchor nil :mode :normal :named-focus nil :editor nil)
-          (sync-cube!)))))
+          (swap! app assoc :named-focus nil :editor nil)
+          (sync-cube!)
+          (when (and (= :cube (:view @app)) (or (:cube-fit @app) (not (:cube-initialized @app))))
+            (swap! app assoc :cube-initialized true)
+            (when (e/active-bounds (:doc @app)) (fit-cube!)))))))
 
 (defn toggle-visual! []
   (when (and (editable?) (not (:named-focus @app)))
@@ -327,6 +373,8 @@
       (and (= "BUTTON" (.. event -target -tagName)) (#{"Enter" " "} key)) nil
       (.-altKey event) nil
       (= key "?") (do (.preventDefault event) (swap! app update :help not))
+      (and (= :editor (:route s)) (= :cube (:view s)) (#{"PageUp" "PageDown"} key))
+      (do (.preventDefault event) (move-depth! (if (= key "PageUp") 1 -1)))
       (not= :editor (:route s)) nil
       (:command s) (do (.preventDefault event) (command-key! key))
       (and ctrl (= (str/lower-case key) "s")) (do (.preventDefault event) (notify! "Changes save automatically to IndexedDB."))
@@ -371,14 +419,16 @@
                                (.catch (fn [err]
                                          (swap! app assoc :save-status "Save failed")
                                          (report! err)))))))
-               (when (not= (:theme old) (:theme new))
-                 (.catch (db/save-preferences! {:theme (:theme new)}) report!)))))
+               (when (or (not= (:theme old) (:theme new))
+                         (not= (:cube-options old) (:cube-options new)))
+                 (.catch (db/save-preferences! {:theme (:theme new) :cube-options (cube-options)}) report!)))))
 
 (defn init! []
   (-> (db/open!)
       (.then (fn [_] (db/preferences!)))
       (.then (fn [prefs]
                (when (#{"dark" "light"} (:theme prefs)) (swap! app assoc :theme (:theme prefs)))
+               (swap! app assoc :cube-options (preview/restore-options (:cube-options prefs)))
                (install-persistence!)
                (db/all-documents!)))
       (.then (fn [docs]

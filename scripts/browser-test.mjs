@@ -140,28 +140,50 @@ try {
     await page.getByRole('textbox', {name:'Coordinate predicate'}).fill('name => name === "double"');
     await page.getByRole('textbox', {name:'Value predicate'}).fill('v => ["heading"]');
     await clickText('Apply rule');
-    await clickText('Move named highlight up');
+    await clickText('Edit named highlight');
+    assert.equal(await page.getByRole('textbox',{name:'Rule name'}).inputValue(),'named highlight');
+    await page.getByRole('textbox',{name:'Rule name'}).fill('named highlight edited');
+    await page.getByRole('textbox',{name:'Coordinate predicate'}).fill('name => typeof name === "string" && name === "double"');
+    await page.getByRole('textbox',{name:'Value predicate'}).fill('v => v === 42 ? ["heading"] : []');
+    await page.getByRole('checkbox',{name:'Rule enabled'}).uncheck();
+    await page.getByRole('textbox',{name:'Coordinate predicate'}).focus();
+    await press('Control+Enter');
+    assert.equal(await page.locator('.rule-card').count(),4);
+    assert.equal(await page.getByRole('checkbox',{name:'Enable named highlight edited'}).isChecked(),false);
+    await page.getByRole('checkbox',{name:'Enable named highlight edited'}).check();
+    await clickText('Move named highlight edited up');
     const names = await page.locator('.rule-name').allTextContents();
-    assert.equal(names[2], 'named highlight');
+    assert.equal(names[2], 'named highlight edited');
     await page.getByRole('button',{name:/^Named cells/}).click();
     const named = page.locator('.named-card').filter({has:page.getByRole('button',{name:'$ double',exact:true})});
     assert.equal(await named.locator('.heading').count(), 1);
     await clickText('CSS');
-    await page.getByRole('textbox',{name:'Table CSS'}).fill('.heading { color: rgb(255, 100, 50); }');
+    await page.getByRole('textbox',{name:'Table CSS'}).fill('.heading { color: rgb(255, 100, 50); }\n.cell-content { outline: 1px solid rgb(200, 70, 0); }');
     await clickText('Apply CSS');
     const heading = page.locator('[data-coord="[0,0,0,0,0]"] .heading');
     // Current viewport can be below origin; return to it to inspect the stylesheet.
     await go(0,0);
     assert.equal(await heading.evaluate(el => getComputedStyle(el).color), 'rgb(255, 100, 50)');
+    await go(8,0);
+    const outside = page.locator('[data-coord="[8,0,0,0,0]"] .cell-content');
+    const insideHole = page.locator('[data-coord="[7,0,0,0,0]"] .cell-content');
+    assert.equal(await outside.evaluate(el=>el.classList.contains('heading')),false);
+    assert.equal(await outside.evaluate(el=>getComputedStyle(el).outlineStyle),'none');
+    assert.equal(await insideHole.evaluate(el=>el.classList.contains('heading')),true);
+    assert.equal(await insideHole.evaluate(el=>getComputedStyle(el).outlineStyle),'solid');
+    await go(0,0);
   });
   await check('help and themes are toggleable', async () => {
     await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 1);
     await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 0);
     await clickText('Light theme'); assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
   });
-  await check('3D is read-only and shows 27 cells', async () => {
+  await check('3D fits the active volume, remains read-only, and synchronizes axes', async () => {
     await page.locator('body').click({position:{x:2,y:2}});
-    await press('t'); assert.equal(await page.locator('.cube-cell').count(), 27);
+    await press('t');
+    const shape = await Promise.all(['X','Y','Z'].map(axis=>page.getByRole('spinbutton',{name:`3D ${axis} size`}).inputValue().then(Number)));
+    assert.ok(shape.some(n=>n>3));
+    assert.equal(await page.locator('.cube-cell').count(),shape.reduce((a,b)=>a*b));
     await press('Enter'); assert.equal(await page.getByRole('dialog').count(), 0);
     assert.equal(await page.getByRole('button', {name:'Edit',exact:true}).isDisabled(), true);
     await press('Control+z'); // undo is also disabled in the preview
@@ -226,6 +248,96 @@ try {
       await press('ArrowRight'); at[0]=1; assert.equal(await coord(),JSON.stringify(at));
       await press('ArrowUp'); if(n>1) at[1]=-1; assert.equal(await coord(),JSON.stringify(at));
     }
+  });
+  await check('visual mode spans planes and slices for 5D fill, copy, clear, and undo', async () => {
+    await create('hyperfill',5);
+    await page.locator('body').click({position:{x:2,y:2}});
+    await press('v','ArrowRight','ArrowDown','3','ArrowDown','4','ArrowDown','5','ArrowDown','1');
+    assert.equal(await page.locator('.mode-badge').textContent(),'VISUAL');
+    assert.equal(await page.locator('.selection-count').textContent(),'32 selected');
+    assert.equal(await page.locator('.sheet td.selected').count(),4);
+    await edit('(a,b,c,d,e) => a+b+c+d+e',true);
+    assert.equal(await page.locator('.status-right').innerText().then(t=>t.trim().endsWith('32 cells')),true);
+    await page.getByLabel('X dimension',{exact:true}).selectOption('1');
+    await page.getByLabel('Y dimension',{exact:true}).selectOption('2');
+    for (const d of [3,4,5]) {
+      await page.getByLabel(`Dimension ${d} slice coordinate`).fill('0');
+      await page.getByLabel(`Dimension ${d} slice coordinate`).blur();
+    }
+    await waitText([0,0,0,0,0],'0');
+    await waitText([1,1,0,0,0],'2');
+    await go(0,0); await press('v','ArrowRight','ArrowDown');
+    await page.getByLabel('X dimension',{exact:true}).selectOption('3');
+    await page.getByLabel('X dimension',{exact:true}).blur();
+    for (const d of [3,4,5]) {
+      await page.getByLabel(`Dimension ${d} slice coordinate`).fill('1');
+      await page.getByLabel(`Dimension ${d} slice coordinate`).blur();
+    }
+    assert.equal(await page.locator('.selection-count').textContent(),'32 selected');
+    await press('y');
+    await page.getByLabel('X dimension',{exact:true}).selectOption('1');
+    const start = [-4,-3,-2,-1,-5];
+    for (const [index,value] of start.entries()) {
+      await page.getByLabel(`Dimension ${index+1} slice coordinate`).fill(String(value));
+      await page.getByLabel(`Dimension ${index+1} slice coordinate`).blur();
+    }
+    await press('p'); await waitText(start,'-15');
+    assert.match(await page.locator('.status-right').innerText(),/64 cells$/);
+    await press('v','ArrowRight','ArrowDown','3','ArrowDown','4','ArrowDown','5','ArrowDown');
+    assert.equal(await page.locator('.selection-count').textContent(),'32 selected');
+    await press('Delete');
+    assert.match(await page.locator('.status-right').innerText(),/32 cells$/);
+    assert.equal(await page.locator('.mode-badge').textContent(),'NORMAL');
+    await press('u'); assert.match(await page.locator('.status-right').innerText(),/64 cells$/);
+  });
+  await check('OKLCH example, configurable volume, slices, picking, camera, and persistence', async () => {
+    await clickText('Home'); await clickText('Open OKLCH color cube');
+    await waitText([5,4,3],'[5,4,3]');
+    const palette = page.locator('[data-coord="[5,4,3]"] .cell-content');
+    assert.match(await palette.evaluate(el=>getComputedStyle(el).backgroundColor),/oklch/);
+    assert.match(await page.locator('.status-right').innerText(),/512 cells$/);
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t');
+    assert.equal(await page.locator('.cube-cell').count(),512);
+    assert.equal(await page.locator('.cube-layer').count(),8);
+    assert.match(await page.locator('.cube-ranges').innerText(),/8 × 8 × 8/);
+    await page.getByRole('checkbox',{name:'3D show labels'}).uncheck();
+    await page.locator('.toast').waitFor({state:'hidden'});
+    await page.screenshot({path:'/tmp/ndcalc-color-stack.png'});
+    await page.getByRole('spinbutton',{name:'3D X size'}).fill('4');
+    assert.equal(await page.locator('.cube-cell').count(),256);
+    assert.equal(await page.getByRole('checkbox',{name:'3D follow current cell'}).isChecked(),true);
+    await clickText('Fit active bounds'); assert.equal(await page.locator('.cube-cell').count(),512);
+    await clickText('Next Z slice'); assert.equal(await coord(),'[0,0,4]');
+    await press('PageDown'); assert.equal(await coord(),'[0,0,3]');
+    await press('PageUp'); assert.equal(await coord(),'[0,0,4]');
+    await clickText('Slices'); await page.getByRole('checkbox',{name:'3D show labels'}).check();
+    assert.equal(await page.locator('.cube-slice').count(),8);
+    assert.equal(await page.locator('.cube-cell').count(),512);
+    await page.locator('.cube-cell[data-coord="[2,3,4]"]').click();
+    assert.equal(await coord(),'[2,3,4]');
+    await page.screenshot({path:'/tmp/ndcalc-color-slices.png'});
+    await page.locator('.cube-cell[data-coord="[2,3,4]"]').dblclick();
+    await page.getByRole('grid').waitFor(); assert.equal(await coord(),'[2,3,4]');
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t');
+    assert.equal(await page.getByRole('button',{name:'Slices',exact:true}).getAttribute('aria-pressed'),'true');
+    const zoom = page.getByRole('slider',{name:'3D zoom'});
+    const before = Number(await zoom.inputValue()); await zoom.focus(); await press('ArrowRight');
+    assert.equal(Number(await zoom.inputValue()),before+1);
+    await page.getByRole('spinbutton',{name:'3D X size'}).fill('16');
+    await page.getByRole('spinbutton',{name:'3D Y size'}).fill('16');
+    await page.getByRole('spinbutton',{name:'3D Z size'}).fill('16');
+    assert.equal(await page.locator('.cube-cell').count(),4096);
+    await page.getByRole('spinbutton',{name:'3D Z size'}).fill('17');
+    assert.equal(await page.getByRole('spinbutton',{name:'3D Z size'}).inputValue(),'16');
+    assert.match(await page.locator('.toast').innerText(),/4096/);
+    await clickText('Fit active bounds');
+    await page.waitForTimeout(150); await page.reload();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'OKLCH color cube',exact:true})}).locator('.document-open').click();
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t');
+    assert.equal(await page.locator('.cube-cell').count(),512);
+    assert.equal(await page.locator('.cube-slice').count(),8);
+    assert.equal(await page.getByRole('checkbox',{name:'3D show labels'}).isChecked(),true);
+    assert.equal(Number(await page.getByRole('slider',{name:'3D zoom'}).inputValue()),before+1);
   });
   assert.deepEqual(errors, []);
   console.log('\nAll browser workflows passed.');

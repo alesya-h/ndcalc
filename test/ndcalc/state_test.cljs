@@ -57,7 +57,98 @@
   (s/move! 100 100 true)
   (is (= [[0 0 0 0 0]] (s/selected-coords)))
   (s/switch! 1)
-  (is (nil? (:anchor @s/app))))
+  (is (= [0 0 0 0 0] (:anchor @s/app)))
+  (is (= :visual (:mode @s/app))))
+
+(deftest five-dimensional-visual-fill-survives-plane-switches
+  (s/select! [-2 -3 0 0 0] false)
+  (s/toggle-visual!)
+  (s/move! 1 1 false)
+  (doseq [dimension [3 4 5]]
+    (s/switch! dimension)
+    (s/move! 0 (if (= dimension 4) -1 1) false))
+  (s/set-mapping! 0 1)
+  (is (= :visual (:mode @s/app)))
+  (is (= [-2 -3 0 0 0] (:anchor @s/app)))
+  (is (= 32 (count (s/selected-coords))))
+  (let [coords (s/selected-coords)]
+    (s/open-editor! "formula")
+    (is (= 32 (count (get-in @s/app [:editor :coords]))))
+    (swap! s/app assoc-in [:editor :source] "(a,b,c,d,e) => a+b+c+d+e")
+    (s/save-editor!)
+    (is (= 32 (count (get-in @s/app [:doc :cells]))))
+    (doseq [c coords] (is (= (reduce + c) (:value ((:evaluate (s/runtime)) c))))))
+  (is (= :normal (:mode @s/app)))
+  (is (nil? (:anchor @s/app)))
+  (s/undo! false)
+  (is (empty? (get-in @s/app [:doc :cells])))
+  (s/undo! true)
+  (is (= 32 (count (get-in @s/app [:doc :cells])))))
+
+(deftest slice-inputs-and-preview-preserve-hyperbox-selection
+  (swap! s/app assoc :cube-axes [1 2 3])
+  (s/toggle-visual!)
+  (s/move! 1 1 false)
+  (s/set-slice! 3 -1)
+  (is (= 8 (count (s/selected-coords))))
+  (is (= [0 0 0 0 0] (:anchor @s/app)))
+  (s/toggle-3d!)
+  (s/toggle-3d!)
+  (is (= :visual (:mode @s/app)))
+  (is (= 8 (count (s/selected-coords))))
+  (s/set-mapping! 0 0)
+  (s/set-mapping! 1 0)
+  (is (= 8 (count (s/selected-coords)))))
+
+(deftest hyperbox-clear-and-selection-limit
+  (s/change! #(-> %
+                  (e/put-cell ["keep"] {:kind "value" :source "42"})
+                  (e/put-cell [4 4 4] {:kind "value" :source "99"})))
+  (s/toggle-visual!)
+  (s/select! [1 1 1 0 0] false)
+  (s/open-editor! "value")
+  (swap! s/app assoc-in [:editor :source] "7")
+  (s/save-editor!)
+  (s/select! [0 0 0 0 0] false)
+  (s/toggle-visual!)
+  (s/select! [1 1 1 0 0] false)
+  (s/switch! 3)
+  (s/clear!)
+  (is (= {"[4,4,4,0,0]" {:kind "value" :source "99"}} (get-in @s/app [:doc :cells])))
+  (is (= "42" (:source (e/cell-at (:doc @s/app) ["keep"]))))
+  (s/toggle-visual!)
+  (s/select! [9 9 9 9 9] false)
+  (let [before (:doc @s/app)]
+    (s/open-editor! "value")
+    (s/clear!)
+    (is (nil? (:editor @s/app)))
+    (is (= before (:doc @s/app)))
+    (is (= :visual (:mode @s/app)))))
+
+(deftest hyperbox-clipboard-keeps-depth-and-plane-orientation
+  (let [source {:kind "formula" :source "(a,b,c) => a+10*b+100*c"}]
+    (s/change! #(-> % (e/put-cell [-1 -2 0] source) (e/put-cell [0 0 1] source)
+                       (e/put-cell [11 20 30 7 -8] {:kind "value" :source "99"})))
+    (s/select! [0 0 1 0 0] false)
+    (s/toggle-visual!)
+    (s/select! [-1 -2 0 0 0] false)
+    (s/yank!)
+    (is (= [2 3 2 1 1] (get-in @s/app [:clipboard :shape])))
+    (is (= 12 (count (get-in @s/app [:clipboard :cells]))))
+    (s/set-mapping! 0 3)
+    (s/set-mapping! 1 1)
+    (s/select! [10 20 30 7 -8] false)
+    (s/paste!)
+    (is (= source (e/cell-at (:doc @s/app) [10 20 30 7 -8])))
+    (is (= source (e/cell-at (:doc @s/app) [12 21 31 7 -8])))
+    (is (nil? (e/cell-at (:doc @s/app) [11 20 30 7 -8])))
+    (is (= 3322 (:value ((:evaluate (s/runtime)) [12 21 31 7 -8]))))
+    (s/open-document! (demo/blank-document "2D target" 2))
+    (s/paste!)
+    (is (empty? (get-in @s/app [:doc :cells])))
+    (s/select! ["keep"] false)
+    (s/paste!)
+    (is (empty? (get-in @s/app [:doc :named])))))
 
 (deftest axis-clear-stays-in-the-current-slice
   (s/change! #(-> %
@@ -72,6 +163,40 @@
   (is (= "4" (:source (e/cell-at (:doc @s/app) [0 1 1]))))
   (s/undo! false)
   (is (= 4 (count (get-in @s/app [:doc :cells])))))
+
+(deftest configurable-volume-fit-and-depth-navigation
+  (s/open-document! (demo/color-document))
+  (s/toggle-3d!)
+  (is (= [8 8 8] (:shape (s/cube-window))))
+  (is (= 512 (:total (s/cube-window))))
+  (is (:cube-fit @s/app))
+  (s/move-depth! 1)
+  (is (= [0 0 4] (s/coord)))
+  (is (= [0 0 0] (:start (s/cube-window))))
+  (s/set-cube-size! 0 4)
+  (is (false? (:cube-fit @s/app)))
+  (is (= [4 8 8] (:shape (s/cube-window))))
+  (is (= [-1 -3 1] (:start (s/cube-window))))
+  (s/set-cube-option! :zoom 125)
+  (s/fit-cube!)
+  (is (= 125 (:zoom (s/cube-options))))
+  (is (= 512 (:total (s/cube-window)))))
+
+(deftest oversized-previews-never-change-the-document-or-window
+  (swap! s/app assoc :cube-axes [1 2 3])
+  (s/set-cube-option! :size [16 16 16])
+  (let [doc (:doc @s/app)]
+    (s/set-cube-size! 0 32)
+    (is (= [16 16 16] (:size (s/cube-options))))
+    (is (= doc (:doc @s/app)))
+    (is (re-find #"4096" (:toast @s/app)))))
+
+(deftest shrinking-rank-repairs-the-preview-z-axis
+  (swap! s/app assoc :cube-axes [1 2 5])
+  (s/change! #(e/resize-dimensions % 3))
+  (s/toggle-3d!)
+  (is (= [1 2 3] (:cube-axes @s/app)))
+  (is (= 512 (:total (s/cube-window)))))
 
 (deftest cube-axes-and-navigation-stay-in-sync
   (swap! s/app assoc :cube-axes [1 2 3])
@@ -117,6 +242,27 @@
   (s/change! #(e/put-cell % [] {:kind "value" :source "123"}))
   (s/open-editor! "formula")
   (is (= "123" (get-in @s/app [:editor :source]))))
+
+(deftest editing-formatting-rules-keeps-identity-and-order
+  (let [rule {:id "first" :name "Original" :enabled true :coord "() => true" :value "v => ['base']"}
+        other {:id "second" :name "Other" :enabled true :coord "() => false" :value "v => []"}
+        edited (assoc rule :name "Edited" :enabled false :coord "(a,b) => b === 0" :value "v => 'color: coral'")]
+    (s/change! #(assoc % :rules [rule other]))
+    (s/open-rule! rule)
+    (swap! s/app assoc :rule-editor edited)
+    (s/save-rule!)
+    (is (= [edited other] (get-in @s/app [:doc :rules])))
+    (is (nil? (:rule-editor @s/app)))
+    (s/undo! false)
+    (is (= [rule other] (get-in @s/app [:doc :rules])))
+    (s/undo! true)
+    (is (= [edited other] (get-in @s/app [:doc :rules])))
+    (let [before (:doc @s/app)]
+      (s/open-rule! edited)
+      (swap! s/app assoc-in [:rule-editor :coord] "(()")
+      (s/save-rule!)
+      (is (= before (:doc @s/app)))
+      (is (string? (get-in @s/app [:rule-editor :error]))))))
 
 (deftest readonly-means-no-content-changes
   (s/change! #(e/put-cell % [] {:kind "value" :source "5"}))

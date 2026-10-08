@@ -10,6 +10,16 @@
    :cells {} :named {} :rules [] :css default-css
    :view {:coord (vec (repeat dimensions 0)) :mapping (e/initial-mapping dimensions)}})
 
+(defn color-document []
+  (let [doc (blank-document "OKLCH color cube" 3)
+        doc (reduce (fn [d c] (e/put-cell d c {:kind "formula" :source "(a,b,c) => [a,b,c]"}))
+                    doc (for [c (range 8) b (range 8) a (range 8)] [a b c]))]
+    (assoc doc :view {:coord [0 0 3] :mapping [1 2]}
+           :css ""
+           :rules [{:id (str (random-uuid)) :name "OKLCH coordinates" :enabled true
+                    :coord "(...coord) => true"
+                    :value "v => Array.isArray(v) ? `background-color: oklch(${v[0]*100/8}% ${v[1]*0.4/8} ${v[2]*360/8}); color: ${v[0] < 5 ? 'white' : '#17202b'};` : ''"}])))
+
 (defn demo-document []
   (let [doc (blank-document "5D example" 5)
         headings ["Experiment" "Baseline" "Growth" "Projected" "Δ change"]

@@ -93,8 +93,29 @@
     (is (= 1 (:value ((:evaluate runtime) [0]))))
     (is (= 1 (:value ((:evaluate runtime) [0]))))))
 
+(deftest preview-navigation-does-not-exhaust-the-evaluation-budget
+  (let [runtime (e/make-runtime (demo/blank-document "browse" 1))]
+    (is (every? #(not (:error ((:evaluate runtime) [%]))) (range 20002)))
+    (is (empty? @(:cache runtime))))
+  (let [doc (e/put-cell (demo/blank-document "budget" 1) [0]
+                       (formula "x => {for(let i=1;i<20002;i++) $(i); return 0}"))]
+    (is (re-find #"Evaluation budget" (:error (result doc [0]))))))
+
+(deftest color-cube-example
+  (let [doc (demo/color-document) runtime (e/make-runtime doc)
+        result ((:evaluate runtime) [5 4 3])]
+    (is (= 3 (:dimensions doc)))
+    (is (= 512 (count (:cells doc))))
+    (is (= {:start [0 0 0] :end [7 7 7]} (e/active-bounds doc)))
+    (is (= [5 4 3] (js->clj (:value result))))
+    (is (re-find #"oklch\(62.5% 0.2 135\)" (:style ((:format runtime) [5 4 3] result))))
+    (is (empty? (:style ((:format runtime) [8 4 3] {:value #js [8 4 3]}))))
+    (is (= (:cells doc) (:cells (e/json->document (e/document->json doc)))))))
+
 (deftest formatting
-  (let [doc (assoc (demo/blank-document "style" 2)
+  (let [doc (assoc (-> (demo/blank-document "style" 2)
+                       (e/put-cell [0 1] (value "5"))
+                       (e/put-cell ["input"] (value "5")))
                    :rules [{:name "static" :enabled true :coord "() => true" :value "v => ['base']"}
                            {:name "positive" :enabled true :coord "(x,y) => x === 0" :value "v => v > 0 ? 'color: green' : ''"}
                            {:name "later" :enabled true :coord "() => true" :value "v => 'color: red'"}
@@ -109,12 +130,47 @@
     (is (= ["base" "named"] (:classes ((:format runtime) ["input"] {:value 5}))))))
 
 (deftest formatting-errors-are-isolated
-  (let [runtime (e/make-runtime (assoc (demo/blank-document "bad" 0)
+  (let [runtime (e/make-runtime (assoc (e/put-cell (demo/blank-document "bad" 0) [] (value "3"))
                                      :rules [{:name "invalid" :enabled true :coord "() => true" :value "v => 42"}
                                              {:name "fine" :enabled true :coord "() => true" :value "v => ['ok']"}]))
         fmt ((:format runtime) [] {:value 3})]
     (is (= ["ok"] (:classes fmt)))
     (is (= 1 (count (:errors fmt))))))
+
+(deftest formatting-is-limited-to-the-active-hypercube
+  (set! (.-ndcalcFormattingCalls js/globalThis) 0)
+  (let [rule {:name "all" :enabled true
+              :coord "(...coord) => {globalThis.ndcalcFormattingCalls++; return true;}"
+              :value "v => ['inside']"}
+        doc (-> (demo/blank-document "5D formatting" 5)
+                (e/put-cell [-2 -3 -1 0 2] (value "1"))
+                (e/put-cell [2 3 1 0 4] (value "2"))
+                (assoc :rules [rule]))
+        runtime (e/make-runtime doc)
+        outside [[-3 0 0 0 3] [0 -4 0 0 3] [0 0 -2 0 3]
+                 [0 0 0 1 3] [0 0 0 0 5] []]
+        empty-format {:classes [] :style "" :errors []}]
+    (doseq [coord outside]
+      (is (= empty-format ((:format runtime) coord {:value 1}))))
+    (is (= 0 (.-ndcalcFormattingCalls js/globalThis)))
+    (is (= ["inside"] (:classes ((:format runtime) [0 0 0 0 3] {:value js/undefined}))))
+    (is (= ["inside"] (:classes ((:format runtime) [-2 -3 -1 0 2] {:value 1}))))
+    (is (= 2 (.-ndcalcFormattingCalls js/globalThis)))
+    (let [empty-runtime (e/make-runtime (assoc (demo/blank-document "empty" 0) :rules [rule]))]
+      (is (= empty-format ((:format empty-runtime) [] {:value js/undefined}))))
+    (let [named-runtime (e/make-runtime (-> (demo/blank-document "named only" 0)
+                                           (e/put-cell ["input"] (value "5"))
+                                           (assoc :rules [rule])))]
+      (is (= ["inside"] (:classes ((:format named-runtime) ["input"] {:value 5})))))))
+
+(deftest formatting-bounds-update-after-content-edits
+  (let [doc (-> (demo/blank-document "resize bounds" 2)
+                (e/put-cell [] (value "1"))
+                (assoc :rules [{:name "static" :enabled true :coord "() => true" :value "v => ['base']"}]))
+        expanded (e/put-cell doc [2 2] (value "2"))]
+    (is (empty? (:classes ((:format (e/make-runtime doc)) [1 1] {:value js/undefined}))))
+    (is (= ["base"] (:classes ((:format (e/make-runtime expanded)) [1 1] {:value js/undefined}))))
+    (is (empty? (:classes ((:format (e/make-runtime (e/put-cell expanded [2 2] nil))) [1 1] {:value js/undefined}))))))
 
 (deftest active-area
   (let [doc (-> (demo/blank-document "bounds" 5)
@@ -131,11 +187,29 @@
 
 (deftest selections
   (is (= [[-1 3 9] [0 3 9] [1 3 9] [-1 4 9] [0 4 9] [1 4 9]]
-         (e/block-coords [1 4 9] [-1 3 9] [1 2])))
-  (is (= [[2 3 0] [2 3 1] [2 3 2]] (e/block-coords [2 3 0] [2 3 2] [0 3])))
-  (is (= [[]] (e/block-coords [] [] [0 0])))
-  (is (thrown? js/Error (e/block-coords [0 0] [100 100] [1 2])))
-  (is (not (e/in-block? [0 0 0] [2 2 0] [1 2] [1 1 1]))))
+         (e/block-coords [1 4 9] [-1 3 9])))
+  (is (= [[2 3 0] [2 3 1] [2 3 2]] (e/block-coords [2 3 0] [2 3 2])))
+  (is (= [[]] (e/block-coords [] [])))
+  (is (thrown? js/Error (e/block-coords [0 0] [100 100])))
+  (is (not (e/in-block? [0 0 0] [2 2 0] [1 1 1]))))
+
+(deftest hyperbox-selections
+  (doseq [n (range 6)]
+    (let [a (vec (repeat n -1)) b (vec (repeat n 0)) coords (e/block-coords b a)]
+      (is (= (js/Math.pow 2 n) (e/block-size a b) (count coords)))
+      (is (= (count coords) (count (set coords))))
+      (is (= a (first coords)))
+      (is (= b (last coords)))
+      (is (every? #(e/in-block? a b %) coords))))
+  (is (= [2 3 4] (e/block-shape [-1 2 8] [0 0 5])))
+  (is (e/in-block? [0 0 0] [1 1 1] [0 1 1]))
+  (is (not (e/in-block? [0 0 0] [1 1 1] [0 1 2])))
+  (is (not (e/in-block? [0 0] [1 1] [0 1 0])))
+  (is (not (e/in-block? [0] [1] ["named"])))
+  (is (= 10000 (count (e/block-coords [0 0 0 0 0] [9 9 9 9 0]))))
+  (is (thrown? js/Error (e/block-coords [0 0 0 0 0] [9 9 9 9 9])))
+  (is (thrown? js/Error (e/block-coords [0 0] [0])))
+  (is (thrown? js/Error (e/block-coords ["name"] ["name"]))))
 
 (deftest resizing-does-not-lose-data
   (let [doc (-> (demo/blank-document "rank" 5) (e/put-cell [1 2 0 0 0] (value "3")))]

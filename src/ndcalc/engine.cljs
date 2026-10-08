@@ -55,26 +55,28 @@
   (or (named? coord)
       (and bounds (every? true? (map <= (:start bounds) coord (:end bounds))))))
 
-(defn in-block? [origin current mapping coord]
-  (let [[x y] mapping
-        dims (set (remove zero? mapping))]
-    (and (not (named? coord))
-         (every? (fn [i]
-                   (if (contains? dims (inc i))
-                     (<= (min (nth origin i) (nth current i)) (nth coord i)
-                         (max (nth origin i) (nth current i)))
-                     (= (nth origin i) (nth coord i))))
-                 (range (count coord))))))
+(defn block-shape [origin current]
+  (when-not (and (= (count origin) (count current))
+                 (every? safe-integer? origin) (every? safe-integer? current))
+    (fail "Selection corners must have matching numeric coordinates."))
+  (mapv #(inc (abs (- %1 %2))) origin current))
 
-(defn block-coords [origin current [x y :as mapping]]
-  (let [a (axis-value origin x) b (axis-value current x)
-        c (axis-value origin y) d (axis-value current y)
-        width (inc (abs (- a b))) height (inc (abs (- c d)))]
-    (when (> (* width height) max-block-size)
-      (fail (str "Selections are limited to " max-block-size " cells.")))
-    (vec (for [j (range (min c d) (inc (max c d)))
-               i (range (min a b) (inc (max a b)))]
-           (plane-coord origin mapping i j)))))
+(defn block-size [origin current] (reduce * 1 (block-shape origin current)))
+
+(defn in-block? [origin current coord]
+  (and (not (named? origin)) (not (named? current)) (not (named? coord))
+       (= (count origin) (count current) (count coord))
+       (every? true? (map #(<= (min %1 %2) %3 (max %1 %2)) origin current coord))))
+
+(defn block-coords
+  "Enumerate the inclusive n-dimensional box; the first dimension varies fastest."
+  [origin current]
+  (when (> (block-size origin current) max-block-size)
+    (fail (str "Selections are limited to " max-block-size " cells.")))
+  (reduce (fn [coords [a b]]
+            (vec (for [value (range (min a b) (inc (max a b))) prefix coords]
+                   (conj prefix value))))
+          [[]] (map vector origin current)))
 
 (defn compile-expression [source read-cell]
   (when (str/blank? source) (fail "Enter a JavaScript expression."))
@@ -114,6 +116,7 @@
    every edit invalidates the graph so conditional reads cannot become stale."
   [doc]
   (let [cache (atom {}) stack (atom []) dependencies (atom {}) calls (atom 0)
+        bounds (active-bounds doc)
         rules (mapv (fn [rule]
                       (if-not (:enabled rule) rule
                         (try (assoc rule
@@ -123,7 +126,7 @@
                     (:rules doc))]
     (letfn [(read-value [coord]
               (let [coord (normalize-coord (:dimensions doc) coord)
-                    key (coord-key coord)]
+                    key (coord-key coord) cell (cell-at doc coord)]
                 (when-let [parent (peek @stack)]
                   (swap! dependencies update parent (fnil conj #{}) key))
                 (when (some #{key} @stack)
@@ -136,7 +139,7 @@
                           (swap! stack conj key)
                           (let [result
                                 (try
-                                  (if-let [cell (cell-at doc coord)]
+                                  (if cell
                                     (let [value (compile-expression (:source cell) (fn [& args] (read-value args)))]
                                       (if (= "formula" (:kind cell))
                                         (do (when-not (fn? value) (fail "Formula source must evaluate to a function."))
@@ -145,14 +148,21 @@
                                     {:value js/undefined})
                                   (catch :default e {:error (or (.-message e) (str e))})
                                   (finally (swap! stack pop)))]
-                            (swap! cache assoc key result)
+                            ;; Missing coordinates are constant and need no cache entry.
+                            (when cell (swap! cache assoc key result))
                             result)))]
                   (if-let [error (:error result)] (fail error) (:value result)))))
             (evaluate [coord]
+              ;; Limit one dependency expansion, not a lifetime of browsing windows.
+              (reset! calls 0)
               (try {:value (read-value coord)}
                    (catch :default e {:error (.-message e)})))
             (format-cell [coord result]
-              (reduce
+              (let [coord (normalize-coord (:dimensions doc) coord)
+                    empty-format {:classes [] :style "" :errors []}]
+                ;; Named cells remain eligible; numeric cells use the full hypercube.
+                (if-not (active? bounds coord) empty-format
+                 (reduce
                 (fn [acc rule]
                   (if-not (:enabled rule) acc
                     (try
@@ -173,7 +183,7 @@
                         acc)
                       (catch :default e
                         (update acc :errors conj (str (:name rule) ": " (.-message e)))))))
-                {:classes [] :style "" :errors []} rules))]
+                empty-format rules))))]
       {:evaluate evaluate :format format-cell :dependencies dependencies :rules rules :cache cache})))
 
 (defn resize-dimensions [doc n]
