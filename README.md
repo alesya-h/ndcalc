@@ -69,7 +69,7 @@ Formulas are synchronous and demand-evaluated. Each content revision has a memoi
 
 ## Dimensions and views
 
-The default plane is `(X,Y) = (1,2)` (or `(1,0)` for 1D and `(0,0)` for 0D). Dimensions are **1-based**; **0** is the null axis: one column in X, one row in Y.
+The default plane is `(X,Y) = (1,2)` (or `(1,0)` for 1D and `(0,0)` for 0D). Dimensions are **1-based**; **0** is the null axis: one column in X, one row in Y. `T` cycles all axis orders: two in the plane, six in 3D, and 24 in 4D, without changing coordinates or selection.
 
 In the plane, press a dimension key to rotate it into view:
 
@@ -90,7 +90,7 @@ start       (1,2)
 2           (1,2)
 ```
 
-The full current coordinate never changes when remapping. Arrow keys move along the mapped axes; inactive dimensions stay fixed. Dimension chips above the table show X/Y or fixed status and let you change any slice coordinate. Axis dropdowns support dimensions beyond the 1–9 shortcuts.
+The full current coordinate never changes when remapping. Arrow keys move along the mapped axes; inactive dimensions stay fixed. Dimension chips above the table show X/Y/Z/W or hidden navigation-slot status and let you change any slice coordinate. Axis dropdowns support dimensions beyond the 1–9 shortcuts.
 
 The **active area** is the componentwise minimum/maximum of populated numeric coordinates across the entire hypertable. Named cells do not expand it. Outside this box, cells are dimmed but fully navigable/editable. The grid renders a bounded, responsive window rather than allocating a dense hypertable.
 
@@ -104,19 +104,32 @@ The **3D view** is editable and configurable:
 
 3D maintains a distinct, non-null **X/Y/Z dimension queue**. Pressing a dimension key or chip removes that dimension from its existing position and appends it to the end; a new dimension drops the oldest. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is ignored in 3D**, so dimension hotkeys never collapse it to a lower-dimensional view. Axis dropdowns explicitly assign an axis, swapping with an existing axis if necessary. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed.
 
-Two non-null plane axes are needed to enter 3D. Explicitly resizing the document below three dimensions returns to the plane; this is separate from dimension navigation. Computed values, selection highlighting, and active-hypercube formatting are shared by both views.
+Entering a higher-dimensional view fills any null axes with available numeric dimensions. Explicitly resizing the document below the view's rank returns to the plane; this is separate from dimension navigation. Computed values, selection highlighting, and active-hypercube formatting are shared by all views. `Ctrl+t` switches 3D between Stack and Slices.
 
 Home → **Open OKLCH color cube** creates 512 coordinate formulas, `(a,b,c) => [a,b,c]`, over `[0,0,0]` through `[7,7,7]`. A formatting rule maps the value to OKLCH lightness, chroma, and hue. Change D3 in the plane to explore hues, or enter 3D to compare all eight layers. Opening an example creates a new saved document without modifying your existing tables.
+
+The **4D view** (4D button or `Ctrl+Shift+t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, zoom, transparency, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys use a four-element queue; `0` remains ignored.
+
+Higher-axis navigation uses **logical navigation slots**, not hardcoded dimension numbers. The visible X/Y/Z/W axes come first, followed by the **most recently expelled** hidden axes, then other dimensions in ascending order. In the plane, PgUp/PgDn therefore moves the last expelled axis (or D3 before any expulsion). `Ctrl+Up/Down` does the same; `Ctrl+Left/Right` moves slot 4, Alt moves slots 5/6, and Ctrl+Alt slots 7/8. Up/PageUp/Right increments; Down/PageDown/Left decrements. Shift starts or extends an n-dimensional selection with every movement. Hidden chips show `nav3`…`nav8` to identify these bindings. Missing slots report a message without moving.
+
+`Home`/`End` in the plane go to the first/last **populated cell in the current row**, respecting mapped axes and every fixed coordinate. Other rows and slices do not affect the endpoints; an empty row does not move. Shift+Home/End extends selection. These keys do not change coordinates in 3D or 4D.
 
 Changing the dimension count is supported. Removing a dimension is refused if any populated cell has a non-zero coordinate there; data is never silently discarded.
 
 ## Modal keyboard editing
 
-Press **?** to toggle the left cheatsheet. Shortcuts do not intercept typing in inputs/editors.
+Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no hjkl movement bindings. Shortcuts do not intercept typing in inputs/editors.
 
 | Keys | Action |
 | --- | --- |
-| Arrows / `h j k l` | Navigate the plane |
+| Arrows | Navigate X/Y |
+| Home / End | First / last populated cell in this row (plane only) |
+| PgUp / PgDn, Ctrl+Up / Down | Increment / decrement navigation slot 3 |
+| Ctrl+Left / Right | Decrement / increment navigation slot 4 |
+| Alt+Up / Down, Alt+Left / Right | Move slots 5 / 6 |
+| Ctrl+Alt+Up / Down, Ctrl+Alt+Left / Right | Move slots 7 / 8 |
+| Shift+movement | Start / extend selection across dimensions |
+| `T` | Next axis permutation (2 / 6 / 24) |
 | Tab / Shift+Tab | Next / previous X coordinate |
 | `1`–`9`, `0` | Rotate a dimension / null dimension |
 | `g15` Enter | Go to X coordinate 15 |
@@ -134,16 +147,20 @@ Press **?** to toggle the left cheatsheet. Shortcuts do not intercept typing in 
 | Ctrl+Shift+Z / Ctrl+Y | Redo |
 | Ctrl+Enter | Apply the current editor |
 | Escape | Cancel editor / selection / goto |
-| `n` | Create a named cell |
-| `c` | Show conditional formatting |
+| `n` | Named cells panel |
+| `N` | Create a named cell |
+| `c` | CSS panel |
+| `r` | Formatting rules panel |
+| `h` | Toggle help |
 | `t` | Toggle plane / 3D |
-| PgUp / PgDn | Move Z forward / backward in 3D |
+| Ctrl+T | Toggle 3D Stack / Slices |
+| Ctrl+Shift+T | Toggle plane / 4D |
 
 Axis operations use lowercase for **X**, uppercase for **Y**. Visual selection keeps an n-dimensional anchor and selects the inclusive box between it and the current cell, across **all** dimensions. Switching planes, using the axis dropdowns, changing fixed slice coordinates, or jumping with `g`/`G` preserves the selection. The plane highlights its intersection with that box; the selected-cell count includes hidden slices. Enter/fill, Delete, and `y` operate on the entire box, not just the visible plane. Escape or `v` cancels selection; filling, clearing, or copying finishes it.
 
 For a 2×2×2 cube, start at `[0,0,0]`, press `v`, Right, Down, `3`, Down, then Enter to fill all 8 cells. Continue rotating into dimensions 4 and 5 to select higher-dimensional hyperboxes. Null axes collapse the view, not the selection.
 
-Goto accepts signed integers. Copy/paste preserves formula source and every selected slice, including empty cells. The copied extents follow the destination's ordered view axes (X/Y in the plane, X/Y/Z in 3D); remaining extents map to inactive dimensions in ascending dimension order. Paste is refused if a varying extent cannot fit a target dimension (including null axes and named cells), rather than dropping depth. Coordinate-parameter formulas compute at their new locations. Clipboard and undo history are session-local. The 10,000-cell limit applies to the **total hyperbox volume**; undo retains 100 content edits per open document.
+Goto accepts signed integers. Copy/paste preserves formula source and every selected slice, including empty cells. The copied extents follow the destination's ordered view axes (X/Y in the plane, X/Y/Z in 3D, X/Y/Z/W in 4D); remaining extents map to inactive dimensions in ascending dimension order. Paste is refused if a varying extent cannot fit a target dimension (including null axes and named cells), rather than dropping depth. Coordinate-parameter formulas compute at their new locations. Clipboard and undo history are session-local. The 10,000-cell limit applies to the **total hyperbox volume**; undo retains 100 content edits per open document.
 
 ## Conditional formatting and CSS
 
@@ -169,7 +186,7 @@ At render time the coordinate predicate runs first. Only a match invokes the val
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, and plane mapping—automatically saves to **IndexedDB**. Theme and 3D size/layout/labels/camera preferences, including transparency and mouse-adjusted angles, are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and expelled-axis history—automatically saves to **IndexedDB**. Theme and 3D/4D size/layout/labels/camera preferences, including transparency and mouse-adjusted angles, are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 
@@ -186,9 +203,9 @@ The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, 
 - `src/ndcalc/engine.cljs` — coordinates, sparse cells, evaluation, formatting, JSON validation.
 - `src/ndcalc/state.cljs` — modal commands, selection, undo, clipboard, persistence orchestration.
 - `src/ndcalc/storage.cljs` — IndexedDB transactions and preferences.
-- `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview.
+- `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview and 4D slice matrix.
 - `src/ndcalc/app.cljs` — React 19 root and startup.
 - `src/ndcalc/demo.cljs` — working 5D sample and 8×8×8 OKLCH color cube.
-- `src/ndcalc/preview.cljs` — bounded 3D windows, active-bound fitting, camera geometry and validated preferences.
+- `src/ndcalc/preview.cljs` — bounded 3D/4D windows, axis permutations, active-bound fitting, camera geometry and validated preferences.
 - `test/ndcalc/` — ClojureScript unit tests.
 - `scripts/browser-test.mjs` — isolated Playwright end-to-end workflows.

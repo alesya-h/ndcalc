@@ -6,11 +6,24 @@
 (def default-options
   {:size [8 8 8] :layout "stack" :tilt 56 :rotation -28
    :zoom 100 :gap 64 :transparency 0 :labels false})
+(def hyper-default-options (assoc default-options :size [4 4 4 4] :layout "slices"))
 (def option-ranges {:tilt [15 80] :rotation [-180 180] :zoom [25 200] :gap [16 160]
                     :transparency [0 100]})
 
 (defn enqueue-dimension [axes dimension]
-  (vec (take-last 3 (conj (vec (remove #{dimension} axes)) dimension))))
+  (vec (take-last (count axes) (conj (vec (remove #{dimension} axes)) dimension))))
+
+(defn axis-permutations [axes]
+  (if (empty? axes) [[]]
+    (vec (for [axis (sort (distinct axes))
+               tail (axis-permutations (let [index (.indexOf (clj->js axes) axis)]
+                                         (vec (concat (take index axes) (drop (inc index) axes)))))]
+           (into [axis] tail)))))
+
+(defn next-permutation [axes]
+  (let [choices (axis-permutations axes)
+        index (first (keep-indexed #(when (= %2 axes) %1) choices))]
+    (nth choices (mod (inc index) (count choices)))))
 
 (defn replace-axis [axes axis dimension]
   (let [other (first (keep-indexed #(when (= %2 dimension) %1) axes))]
@@ -22,16 +35,17 @@
    :rotation (- (mod (+ 180 (js/Math.round (+ (:rotation options) (* dx 0.35)))) 360) 180)})
 
 (defn validate-shape! [shape]
-  (when-not (and (vector? shape) (= 3 (count shape))
+  (when-not (and (vector? shape) (#{3 4} (count shape))
                  (every? #(and (e/safe-integer? %) (<= 1 % max-axis-size)) shape))
-    (e/fail (str "3D window sizes must be integers from 1 to " max-axis-size ".")))
+    (e/fail (str "3D/4D window sizes must be integers from 1 to " max-axis-size ".")))
   (when (> (reduce * shape) max-cells)
-    (e/fail (str "3D previews are limited to " max-cells " cells. Reduce another axis first.")))
+    (e/fail (str "Previews are limited to " max-cells " cells. Reduce another axis first.")))
   shape)
 
 (defn set-option [options key value]
   (case key
-    :size (validate-shape! value)
+    :size (do (validate-shape! value)
+              (when-not (= (count value) (count (:size options))) (e/fail "Wrong preview rank.")))
     :layout (when-not (#{"stack" "slices"} value) (e/fail "Choose Stack or Slices."))
     :labels (when-not (boolean? value) (e/fail "Labels must be enabled or disabled."))
     (let [[low high] (get option-ranges key)]
@@ -39,16 +53,18 @@
         (e/fail "Invalid 3D camera option."))))
   (assoc options key value))
 
-(defn restore-options [saved]
-  ;; Preferences are optional; ignore invalid/unknown fields from old versions.
-  (reduce-kv (fn [options key value]
-               (try (set-option options key value) (catch :default _ options)))
-             default-options (if (map? saved) saved {})))
+(defn restore-options
+  ([saved] (restore-options saved default-options))
+  ([saved defaults]
+   ;; Preferences are optional; ignore invalid/unknown fields from old versions.
+   (reduce-kv (fn [options key value]
+                (try (set-option options key value) (catch :default _ options)))
+              defaults (if (map? saved) saved {}))))
 
 (defn fit-shape [widths]
-  (when-not (and (= 3 (count widths))
+  (when-not (and (#{3 4} (count widths))
                  (every? #(and (number? %) (js/Number.isInteger %) (pos? %)) widths))
-    (e/fail "Expected three positive bounds extents."))
+    (e/fail "Expected three or four positive bounds extents."))
   (loop [shape (mapv #(min max-axis-size %) widths)]
     (if (<= (reduce * shape) max-cells) shape
       (let [axis (first (keep-indexed #(when (= %2 (apply max shape)) %1) shape))]
@@ -59,9 +75,9 @@
 
 (defn window [doc axes shape fit?]
   (validate-shape! shape)
-  (when-not (and (= 3 (count axes)) (= 3 (count (set axes)))
+  (when-not (and (= (count shape) (count axes) (count (set axes)))
                  (every? #(and (e/safe-integer? %) (<= 1 % (:dimensions doc))) axes))
-    (e/fail "3D requires three distinct numeric axes."))
+    (e/fail "Preview axes must be distinct numeric dimensions."))
   (let [bounds (e/active-bounds doc) c (get-in doc [:view :coord])
         fit? (and fit? bounds)
         starts (mapv (fn [axis size]

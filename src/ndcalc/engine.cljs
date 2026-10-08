@@ -240,12 +240,16 @@
                         (assoc rule :id (str (random-uuid)))) (:rules doc))
           view (:view doc)
           coord (normalize-coord n (or (:coord view) []))
-          mapping (or (:mapping view) (initial-mapping n))]
+          mapping (or (:mapping view) (initial-mapping n))
+          expelled (or (:expelled view) [])]
       (when (or (named? coord) (not= 2 (count mapping))
                 (not (every? #(and (safe-integer? %) (<= 0 % n)) mapping))
                 (and (pos? (first mapping)) (= (first mapping) (second mapping))))
         (fail "Invalid saved view."))
+      (when-not (and (vector? expelled) (= (count expelled) (count (set expelled)))
+                      (every? #(and (safe-integer? %) (<= 1 % n)) expelled))
+        (fail "Invalid expelled dimensions."))
       {:id (str (random-uuid)) :title (:title doc) :dimensions n
        :cells normalized :named names :rules rules :css (:css doc)
        :createdAt (.now js/Date) :updatedAt (.now js/Date)
-       :view {:coord coord :mapping mapping}})))
+       :view {:coord coord :mapping mapping :expelled expelled}})))

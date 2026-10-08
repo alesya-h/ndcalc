@@ -61,6 +61,25 @@
       (is (every? e/safe-integer? (mapcat identity (:ranges window))))
       (is (every? #(some #{edge} %) (:ranges window))))))
 
+(deftest four-dimensional-windows-and-preferences
+  (is (= [8 8 8 8] (p/fit-shape [1000 1000 1000 1000])))
+  (is (= [2 3 4 5] (p/enqueue-dimension [1 2 3 4] 5)))
+  (is (= [1 2 4 3] (p/enqueue-dimension [1 2 3 4] 3)))
+  (let [doc (assoc-in (demo/blank-document "4D edges" 6) [:view :coord]
+                      [js/Number.MAX_SAFE_INTEGER -10 20 (- js/Number.MAX_SAFE_INTEGER) 5 7])
+        window (p/window doc [4 1 5 2] [8 8 8 8] false)]
+    (is (= 4096 (:total window)))
+    (is (= [8 8 8 8] (mapv count (:ranges window))))
+    (is (every? e/safe-integer? (mapcat identity (:ranges window))))
+    (is (= (get-in doc [:view :coord])
+           [js/Number.MAX_SAFE_INTEGER -10 20 (- js/Number.MAX_SAFE_INTEGER) 5 7])))
+  (let [options (p/restore-options {:size [2 3 4 5] :labels true} p/hyper-default-options)]
+    (is (= [2 3 4 5] (:size options)))
+    (is (:labels options))
+    (is (thrown? js/Error (p/set-option options :size [2 3 4]))))
+  (is (= [4 4 4 4] (:size (p/restore-options {:size [2 3 4]} p/hyper-default-options))))
+  (is (= [[0 0]] (p/axis-permutations [0 0]))))
+
 (deftest preferences-are-validated-and-camera-fits
   (let [options (p/restore-options {:size [32 32 32] :tilt 75 :zoom 125 :labels true
                                     :layout "slices" :rotation -99 :gap -1 :unknown 42})
