@@ -4,6 +4,24 @@
             [ndcalc.demo :as demo]
             [ndcalc.engine :as e]))
 
+(deftest dimension-queues-and-explicit-axis-swaps
+  (is (= [1 2 3] (p/enqueue-dimension [1 2 3] 3)))
+  (is (= [2 3 1] (p/enqueue-dimension [1 2 3] 1)))
+  (is (= [1 3 2] (p/enqueue-dimension [1 2 3] 2)))
+  (is (= [2 3 5] (p/enqueue-dimension [1 2 3] 5)))
+  (is (= [3 2 1] (p/replace-axis [1 2 3] 0 3)))
+  (is (= [1 5 3] (p/replace-axis [1 2 3] 1 5))))
+
+(deftest drag-camera-wraps-rotation-and-clamps-tilt
+  (is (= {:tilt 42 :rotation 0} (p/drag-camera p/default-options 80 40)))
+  (is (= 15 (:tilt (p/drag-camera p/default-options 0 1000))))
+  (is (= 80 (:tilt (p/drag-camera p/default-options 0 -1000))))
+  (is (= -174 (:rotation (p/drag-camera (assoc p/default-options :rotation 179) 20 0))))
+  (is (= 174 (:rotation (p/drag-camera (assoc p/default-options :rotation -179) -20 0))))
+  (is (= 35 (:transparency (p/restore-options {:transparency 35}))))
+  (is (= 0 (:transparency (p/restore-options {:transparency 101}))))
+  (is (thrown? js/Error (p/set-option p/default-options :transparency -1))))
+
 (deftest sizes-and-fitting-are-bounded
   (is (= [8 8 8] (p/validate-shape! [8 8 8])))
   (is (= [16 16 16] (p/fit-shape [1000 1000 1000])))

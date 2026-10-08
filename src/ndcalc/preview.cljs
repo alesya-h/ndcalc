@@ -5,8 +5,21 @@
 (def max-cells 4096)
 (def default-options
   {:size [8 8 8] :layout "stack" :tilt 56 :rotation -28
-   :zoom 100 :gap 64 :labels false})
-(def option-ranges {:tilt [15 80] :rotation [-180 180] :zoom [25 200] :gap [16 160]})
+   :zoom 100 :gap 64 :transparency 0 :labels false})
+(def option-ranges {:tilt [15 80] :rotation [-180 180] :zoom [25 200] :gap [16 160]
+                    :transparency [0 100]})
+
+(defn enqueue-dimension [axes dimension]
+  (vec (take-last 3 (conj (vec (remove #{dimension} axes)) dimension))))
+
+(defn replace-axis [axes axis dimension]
+  (let [other (first (keep-indexed #(when (= %2 dimension) %1) axes))]
+    (cond-> (assoc axes axis dimension)
+      (some? other) (assoc other (nth axes axis)))))
+
+(defn drag-camera [options dx dy]
+  {:tilt (max 15 (min 80 (js/Math.round (- (:tilt options) (* dy 0.35)))))
+   :rotation (- (mod (+ 180 (js/Math.round (+ (:rotation options) (* dx 0.35)))) 360) 180)})
 
 (defn validate-shape! [shape]
   (when-not (and (vector? shape) (= 3 (count shape))

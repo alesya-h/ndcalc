@@ -71,7 +71,7 @@ Formulas are synchronous and demand-evaluated. Each content revision has a memoi
 
 The default plane is `(X,Y) = (1,2)` (or `(1,0)` for 1D and `(0,0)` for 0D). Dimensions are **1-based**; **0** is the null axis: one column in X, one row in Y.
 
-Press a dimension key to rotate it into view:
+In the plane, press a dimension key to rotate it into view:
 
 1. If it is X, swap X and Y.
 2. If it is Y, move Y into X and make Y null.
@@ -94,14 +94,17 @@ The full current coordinate never changes when remapping. Arrow keys move along 
 
 The **active area** is the componentwise minimum/maximum of populated numeric coordinates across the entire hypertable. Named cells do not expand it. Outside this box, cells are dimmed but fully navigable/editable. The grid renders a bounded, responsive window rather than allocating a dense hypertable.
 
-The **3D view** is read-only and configurable:
+The **3D view** is editable and configurable:
 
 - On first entry, it fits populated bounds along the chosen X/Y/Z axes; an empty table starts with an 8×8×8 window. **Fit active bounds** recalculates extents. Large bounds are explicitly marked as a bounded preview, never presented as the entire volume.
 - Set each axis size independently, **1–32**, with a **4,096-cell total limit**. Manually changing a size enables **Follow cell**, which centers the window on the current coordinate. Uncheck it to fit bounds again.
-- **Stack** automatically fits the projected volume to the available space. Adjust tilt, rotation, zoom, and layer gap; **Reset camera** restores camera defaults. **Slices** displays individually readable, scrollable grids without overlapping planes. **Labels** toggles values/coordinates; without labels, formatting fills each cell for a clearer color-volume view.
-- Click a cell to select it, or double-click to return to its editable plane. **Open in plane** returns to the current selection. Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. Hover for the full value and source.
+- **Stack** automatically fits the projected volume to the available space. **Drag anywhere in the volume, including over cells, to tilt/rotate**; horizontal movement rotates and vertical movement tilts. Dragging never changes the selected cell. The sliders also adjust tilt, rotation, zoom, and layer gap. **Transparency** runs from 0% (opaque) to 100% (invisible) and applies to each layer. **Reset camera** restores camera defaults, including transparency.
+- **Slices** displays individually readable, scrollable grids without overlapping planes. Click to select or double-click to edit without leaving 3D. **Labels** toggles values/coordinates; without labels, formatting fills each cell for a clearer color-volume view.
+- Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. **Enter/i/f**, the Edit button, and the source bar open the cell editor directly in 3D. Visual selection/fill, clear, copy/paste, undo/redo, named cells, formatting rules, and CSS all work without switching to the plane. **Open in plane** is optional. Hover for the full value and source.
 
-Choose distinct X/Y/Z dimensions. X/Y mapping stays synchronized with the plane; changing axes refits the window when fitting bounds. A null X/Y axis returns to the plane, and two non-null axes are needed to enter 3D. Other dimensions remain fixed. Computed values, selection highlighting, and active-hypercube formatting are shared with the plane.
+3D maintains a distinct, non-null **X/Y/Z dimension queue**. Pressing a dimension key or chip removes that dimension from its existing position and appends it to the end; a new dimension drops the oldest. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is ignored in 3D**, so dimension hotkeys never collapse it to a lower-dimensional view. Axis dropdowns explicitly assign an axis, swapping with an existing axis if necessary. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed.
+
+Two non-null plane axes are needed to enter 3D. Explicitly resizing the document below three dimensions returns to the plane; this is separate from dimension navigation. Computed values, selection highlighting, and active-hypercube formatting are shared by both views.
 
 Home → **Open OKLCH color cube** creates 512 coordinate formulas, `(a,b,c) => [a,b,c]`, over `[0,0,0]` through `[7,7,7]`. A formatting rule maps the value to OKLCH lightness, chroma, and hue. Change D3 in the plane to explore hues, or enter 3D to compare all eight layers. Opening an example creates a new saved document without modifying your existing tables.
 
@@ -140,7 +143,7 @@ Axis operations use lowercase for **X**, uppercase for **Y**. Visual selection k
 
 For a 2×2×2 cube, start at `[0,0,0]`, press `v`, Right, Down, `3`, Down, then Enter to fill all 8 cells. Continue rotating into dimensions 4 and 5 to select higher-dimensional hyperboxes. Null axes collapse the view, not the selection.
 
-Goto accepts signed integers. Copy/paste preserves formula source and every selected slice, including empty cells. The copied X/Y extents follow the destination X/Y axes; remaining extents map to inactive dimensions in ascending dimension order. Paste is refused if a varying extent cannot fit a target dimension (including null axes and named cells), rather than dropping depth. Coordinate-parameter formulas compute at their new locations. Clipboard and undo history are session-local. The 10,000-cell limit applies to the **total hyperbox volume**; undo retains 100 content edits per open document.
+Goto accepts signed integers. Copy/paste preserves formula source and every selected slice, including empty cells. The copied extents follow the destination's ordered view axes (X/Y in the plane, X/Y/Z in 3D); remaining extents map to inactive dimensions in ascending dimension order. Paste is refused if a varying extent cannot fit a target dimension (including null axes and named cells), rather than dropping depth. Coordinate-parameter formulas compute at their new locations. Clipboard and undo history are session-local. The 10,000-cell limit applies to the **total hyperbox volume**; undo retains 100 content edits per open document.
 
 ## Conditional formatting and CSS
 
@@ -166,7 +169,7 @@ At render time the coordinate predicate runs first. Only a match invokes the val
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, and plane mapping—automatically saves to **IndexedDB**. Theme and 3D size/layout/labels/camera preferences are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, and plane mapping—automatically saves to **IndexedDB**. Theme and 3D size/layout/labels/camera preferences, including transparency and mouse-adjusted angles, are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 

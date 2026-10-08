@@ -178,15 +178,17 @@ try {
     await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 0);
     await clickText('Light theme'); assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
   });
-  await check('3D fits the active volume, remains read-only, and synchronizes axes', async () => {
+  await check('3D fits the active volume, allows editing, and synchronizes axes', async () => {
     await page.locator('body').click({position:{x:2,y:2}});
     await press('t');
     const shape = await Promise.all(['X','Y','Z'].map(axis=>page.getByRole('spinbutton',{name:`3D ${axis} size`}).inputValue().then(Number)));
     assert.ok(shape.some(n=>n>3));
     assert.equal(await page.locator('.cube-cell').count(),shape.reduce((a,b)=>a*b));
-    await press('Enter'); assert.equal(await page.getByRole('dialog').count(), 0);
-    assert.equal(await page.getByRole('button', {name:'Edit',exact:true}).isDisabled(), true);
-    await press('Control+z'); // undo is also disabled in the preview
+    await press('Enter'); assert.equal(await page.getByRole('dialog').count(), 1);
+    await press('Escape');
+    assert.equal(await page.getByRole('button', {name:'Edit',exact:true}).isDisabled(), false);
+    await press('Control+z','Control+Shift+z');
+    assert.equal(await page.locator('.cube-view').count(),1);
     await page.getByLabel('3D X dimension').selectOption('3');
     await page.getByLabel('3D X dimension').blur();
     await press('ArrowRight');
@@ -303,13 +305,41 @@ try {
     await page.getByRole('checkbox',{name:'3D show labels'}).uncheck();
     await page.locator('.toast').waitFor({state:'hidden'});
     await page.screenshot({path:'/tmp/ndcalc-color-stack.png'});
+    const selectedBeforeDrag = await coord();
+    const rotationBefore = Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue());
+    const tiltBefore = Number(await page.getByRole('slider',{name:'3D tilt'}).inputValue());
+    const stage = await page.locator('.cube-stage').boundingBox();
+    const start = {x:stage.x+stage.width/2,y:stage.y+stage.height/2};
+    await page.mouse.move(start.x,start.y); await page.mouse.down();
+    await page.mouse.move(start.x+90,start.y-45,{steps:10}); await page.mouse.up(); await press();
+    assert.notEqual(Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue()),rotationBefore);
+    assert.notEqual(Number(await page.getByRole('slider',{name:'3D tilt'}).inputValue()),tiltBefore);
+    assert.equal(await coord(),selectedBeforeDrag);
+    const transparency = page.getByRole('slider',{name:'3D transparency'});
+    await transparency.focus(); await press('End');
+    assert.equal(await page.locator('.cube-layer').first().evaluate(el=>getComputedStyle(el).opacity),'0');
+    await press('Home','ArrowRight');
+    assert.equal(await page.locator('.cube-layer').first().evaluate(el=>getComputedStyle(el).opacity),'0.99');
+    await page.locator('body').click({position:{x:2,y:2}});
+    await edit('() => 9001',true); await waitText([0,0,3],'9001');
+    assert.equal(await page.locator('.cube-view').count(),1);
+    await press('u'); await waitText([0,0,3],'[0,0,3]');
+    await press('Control+Shift+z'); await waitText([0,0,3],'9001');
+    await press('u','v','ArrowRight','ArrowDown','PageUp');
+    assert.equal(await page.locator('.selection-count').textContent(),'8 selected');
+    await edit('(a,b,c) => a+b+c',true); await waitText([1,1,4],'6');
+    await press('v','ArrowLeft','ArrowUp','PageDown','Delete');
+    assert.match(await page.locator('.status-right').innerText(),/504 cells$/);
+    await press('u','u'); await waitText([1,1,4],'[1,1,4]');
     await page.getByRole('spinbutton',{name:'3D X size'}).fill('4');
     assert.equal(await page.locator('.cube-cell').count(),256);
     assert.equal(await page.getByRole('checkbox',{name:'3D follow current cell'}).isChecked(),true);
     await clickText('Fit active bounds'); assert.equal(await page.locator('.cube-cell').count(),512);
-    await clickText('Next Z slice'); assert.equal(await coord(),'[0,0,4]');
-    await press('PageDown'); assert.equal(await coord(),'[0,0,3]');
-    await press('PageUp'); assert.equal(await coord(),'[0,0,4]');
+    await page.getByLabel('Dimension 3 slice coordinate').fill('3');
+    await page.getByLabel('Dimension 3 slice coordinate').blur();
+    await clickText('Next Z slice'); assert.equal(await coord(),'[1,1,4]');
+    await press('PageDown'); assert.equal(await coord(),'[1,1,3]');
+    await press('PageUp'); assert.equal(await coord(),'[1,1,4]');
     await clickText('Slices'); await page.getByRole('checkbox',{name:'3D show labels'}).check();
     assert.equal(await page.locator('.cube-slice').count(),8);
     assert.equal(await page.locator('.cube-cell').count(),512);
@@ -317,6 +347,9 @@ try {
     assert.equal(await coord(),'[2,3,4]');
     await page.screenshot({path:'/tmp/ndcalc-color-slices.png'});
     await page.locator('.cube-cell[data-coord="[2,3,4]"]').dblclick();
+    assert.equal(await page.getByRole('dialog').count(),1);
+    await press('Escape'); assert.equal(await page.locator('.cube-view').count(),1);
+    await clickText('Open in plane');
     await page.getByRole('grid').waitFor(); assert.equal(await coord(),'[2,3,4]');
     await page.locator('body').click({position:{x:2,y:2}}); await press('t');
     assert.equal(await page.getByRole('button',{name:'Slices',exact:true}).getAttribute('aria-pressed'),'true');
@@ -338,6 +371,25 @@ try {
     assert.equal(await page.locator('.cube-slice').count(),8);
     assert.equal(await page.getByRole('checkbox',{name:'3D show labels'}).isChecked(),true);
     assert.equal(Number(await page.getByRole('slider',{name:'3D zoom'}).inputValue()),before+1);
+    assert.equal(await page.getByRole('slider',{name:'3D transparency'}).inputValue(),'1');
+  });
+  await check('3D dimension keys enqueue existing/new dimensions without collapsing the view', async () => {
+    await create('3D queue',5);
+    for (const [index,value] of [-1,2,3,4,5].entries()) {
+      await page.getByLabel(`Dimension ${index+1} slice coordinate`).fill(String(value));
+      await page.getByLabel(`Dimension ${index+1} slice coordinate`).blur();
+    }
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t','v','PageUp');
+    const selected = await coord();
+    for (const [key,expected] of [['1',[2,3,1]],['1',[2,3,1]],['2',[3,1,2]],['4',[1,2,4]],['3',[2,4,3]],['0',[2,4,3]],['5',[4,3,5]]]) {
+      await press(key);
+      const actual = await Promise.all(['X','Y','Z'].map(axis=>page.getByLabel(`3D ${axis} dimension`).inputValue().then(Number)));
+      assert.deepEqual(actual,expected);
+      assert.equal(await page.locator('.cube-view').count(),1);
+      assert.equal(await coord(),selected);
+      assert.equal(await page.locator('.mode-badge').textContent(),'VISUAL');
+      assert.equal(await page.locator('.selection-count').textContent(),'2 selected');
+    }
   });
   assert.deepEqual(errors, []);
   console.log('\nAll browser workflows passed.');

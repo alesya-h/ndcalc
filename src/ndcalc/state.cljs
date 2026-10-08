@@ -78,6 +78,10 @@
   (guard! #(do (swap! app assoc :cube-options (preview/set-option (cube-options) key value))
                (when (= key :size) (swap! app assoc :cube-fit false)))))
 
+(defn set-cube-camera! [camera]
+  (guard! #(swap! app assoc :cube-options
+                 (reduce-kv preview/set-option (cube-options) camera))))
+
 (defn set-cube-size! [axis size]
   (set-cube-option! :size (assoc (:size (cube-options)) axis size)))
 
@@ -92,51 +96,64 @@
   (let [z (nth (:cube-axes @app) 2) c (get-in @app [:doc :view :coord])]
     (select! (e/set-axis c z (+ (e/axis-value c z) delta)) false)))
 
+(defn set-cube-axes!
+  ([axes] (set-cube-axes! axes true))
+  ([axes clear-named?]
+   (guard!
+     #(let [n (get-in @app [:doc :dimensions])]
+        (when-not (and (= 3 (count axes)) (= 3 (count (set axes)))
+                       (every? (fn [d] (and (e/safe-integer? d) (<= 1 d n))) axes))
+          (e/fail "3D needs three distinct, non-null dimensions."))
+        (swap! app (fn [s] (cond-> (-> s (assoc :cube-axes axes)
+                                         (assoc-in [:doc :view :mapping] (vec (take 2 axes))))
+                            clear-named? (assoc :named-focus nil))))
+        (ensure-visible!)
+        (when (:cube-fit @app)
+          (if (e/active-bounds (:doc @app)) (fit-cube!)
+            (swap! app assoc :cube-fit false)))))))
+
 (defn sync-cube! []
   (when (= :cube (:view @app))
-    (let [[x y] (mapping) z (nth (or (:cube-axes @app) [1 2 3]) 2)
-          n (get-in @app [:doc :dimensions])]
-      (if (or (zero? x) (zero? y))
-        (do (swap! app assoc :view :plane) (notify! "A null axis returns to the plane view."))
-        (swap! app assoc :cube-axes [x y (if (or (#{x y} z) (not (and (e/safe-integer? z) (<= 1 z n))))
-                                         (first (remove #{x y} (range 1 (inc n)))) z)]))
-      (when (and (= :cube (:view @app)) (:cube-fit @app)) (fit-cube!)))))
+    (let [n (get-in @app [:doc :dimensions])]
+      (if (< n 3) (swap! app assoc :view :plane)
+        (set-cube-axes!
+          (vec (take 3 (distinct (filter #(and (e/safe-integer? %) (<= 1 % n))
+                                        (concat (mapping) (:cube-axes @app) (range 1 (inc n))))))) false)))))
 
 (defn switch! [d]
-  (when (<= d (get-in @app [:doc :dimensions]))
-    (swap! app (fn [s] (-> s
-                           (assoc :named-focus nil)
-                           (update-in [:doc :view :mapping] e/switch-dimension d))))
-    (let [[x y] (mapping)]
-      (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
-    (ensure-visible!)
-    (sync-cube!)))
-
-(defn set-mapping! [axis d]
-  (let [other (if (= axis 0) 1 0) m (mapping)
-        m (if (and (pos? d) (= d (nth m other))) (assoc m other (nth m axis)) m)]
-    (swap! app assoc-in [:doc :view :mapping] (assoc m axis d))
-    (swap! app assoc :named-focus nil)
-    (ensure-visible!)
-    (sync-cube!)))
+  (when (and (e/safe-integer? d) (<= 0 d (get-in @app [:doc :dimensions])))
+    (if (= :cube (:view @app))
+      (if (zero? d) (notify! "The null dimension is ignored in 3D.")
+        (set-cube-axes! (preview/enqueue-dimension (:cube-axes @app) d)))
+      (do
+        (swap! app (fn [s] (-> s (assoc :named-focus nil)
+                               (update-in [:doc :view :mapping] e/switch-dimension d))))
+        (let [[x y] (mapping)]
+          (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
+        (ensure-visible!)))))
 
 (defn set-cube-axis! [axis d]
-  (if (< axis 2) (set-mapping! axis d)
-    (let [[x y] (mapping) z (nth (:cube-axes @app) 2)]
-      (swap! app assoc :cube-axes [x y d])
-      (cond (= d x) (set-mapping! 0 z)
-            (= d y) (set-mapping! 1 z))))
-  (when (and (= :cube (:view @app)) (:cube-fit @app)) (fit-cube!)))
+  (set-cube-axes! (preview/replace-axis (:cube-axes @app) axis d)))
+
+(defn set-mapping! [axis d]
+  (if (= :cube (:view @app))
+    (if (zero? d) (notify! "The null dimension is ignored in 3D.") (set-cube-axis! axis d))
+    (let [other (if (= axis 0) 1 0) m (mapping)
+          m (if (and (pos? d) (= d (nth m other))) (assoc m other (nth m axis)) m)]
+      (swap! app assoc-in [:doc :view :mapping] (assoc m axis d))
+      (swap! app assoc :named-focus nil)
+      (ensure-visible!))))
 
 (defn change! [f]
   (let [old (:doc @app) new (f old)]
     (when-not (= old new)
       (swap! app (fn [s] (-> s
                             (assoc :doc (assoc new :updatedAt (.now js/Date)) :redo [])
-                            (update :undo #(vec (take-last 100 (conj % old))))))))))
+                            (update :undo #(vec (take-last 100 (conj % old)))))))
+      (sync-cube!))))
 
 (defn undo! [redo?]
-  (when (= :plane (:view @app))
+  (when (#{:plane :cube} (:view @app))
    (let [from (if redo? :redo :undo) to (if redo? :undo :redo)
         snapshot (peek (get @app from))]
     (when snapshot
@@ -144,9 +161,10 @@
                             (update to conj (:doc s)) (update from pop)
                             (assoc :doc (assoc snapshot :updatedAt (.now js/Date))
                                    :anchor nil :named-focus nil :mode :normal :editor nil))))
-      (ensure-visible!)))))
+      (ensure-visible!)
+      (sync-cube!)))))
 
-(defn editable? [] (= :plane (:view @app)))
+(defn editable? [] (boolean (and (= :editor (:route @app)) (:doc @app) (#{:plane :cube} (:view @app)))))
 (defn formula-template [dimensions named?]
   (let [args (if named? ["name"]
               (mapv #(if (< % 26) (js/String.fromCharCode (+ 97 %)) (str "d" (inc %)))
@@ -165,7 +183,7 @@
              (assoc :source (editor-template editor) :focus-source true)))))
 
 (defn open-editor! [kind]
-  (if-not (editable?) (notify! "3D is read-only. Switch to the plane to edit.")
+  (if-not (editable?) (notify! "Open a table to edit.")
     (guard!
       #(let [coords (selected-coords) cell (e/cell-at (:doc @app) (first coords))
              kind (or kind (:kind cell) "value")
@@ -175,7 +193,7 @@
          (swap! app assoc :editor editor :command nil)))))
 
 (defn new-named! []
-  (if-not (editable?) (notify! "Switch to the plane to create named cells.")
+  (if-not (editable?) (notify! "Open a table to create named cells.")
     (swap! app assoc :editor {:new-name true :name "" :kind "value" :source "" :error nil})))
 
 (defn save-editor! []
@@ -221,15 +239,16 @@
       (jump! axis (nth (if end? (:end bounds) (:start bounds)) (dec dimension))))))
 
 (defn clipboard-axes [dimensions mapping]
-  ;; First two slots follow X/Y (including null axes); remaining dimensions follow
-  ;; ascending dimension order. This preserves planar paste orientation and depth.
+  ;; Leading slots follow the view's X/Y or X/Y/Z axes; remaining dimensions
+  ;; follow ascending dimension order. Null slots are retained in the plane.
   (into (vec mapping) (remove (set mapping) (range 1 (inc dimensions)))))
 
 (defn yank! []
   (guard!
     #(let [coords (selected-coords) named? (:named-focus @app)
            origin (first coords)
-           axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions]) (mapping)))
+           axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions])
+                                            (if (= :cube (:view @app)) (:cube-axes @app) (mapping))))
            shape (if named? [] (e/block-shape origin (last coords)))
            entries (mapv (fn [c]
                            {:offset (mapv (fn [axis] (- (e/axis-value c axis) (e/axis-value origin axis))) axes)
@@ -243,7 +262,8 @@
     (guard!
       #(if-let [{:keys [cells shape]} (:clipboard @app)]
          (let [c (coord) named? (e/named? c)
-               axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions]) (mapping)))]
+               axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions])
+                                                (if (= :cube (:view @app)) (:cube-axes @app) (mapping))))]
            (when (some (fn [[index size]] (and (> size 1) (zero? (get axes index 0))))
                        (map-indexed vector shape))
              (e/fail "This selection won't fit in the target dimensions or named cell."))
