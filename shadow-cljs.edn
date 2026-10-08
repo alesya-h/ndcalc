@@ -1,0 +1,13 @@
+{:source-paths ["src" "test"]
+ :dependencies [[reagent "2.0.1"]]
+ :dev-http {8080 "public"}
+ :builds
+ {:app {:target :browser
+        :output-dir "public/js"
+        :asset-path "/js"
+        :modules {:main {:init-fn ndcalc.app/init}}
+        :devtools {:after-load ndcalc.app/mount!}}
+  :test {:target :node-test
+         :output-to "target/tests.js"
+         :ns-regexp "-test$"
+         :autorun false}}}

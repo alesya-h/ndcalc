@@ -1,0 +1,206 @@
+// Run against `npm run dev` or `npm run serve`.
+// Set CHROME_CDP_URL=http://127.0.0.1:9222 to use an existing Chrome;
+// otherwise run `npx playwright install chromium` once for a headless browser.
+import assert from 'node:assert/strict';
+import {chromium} from 'playwright';
+import {mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+
+const browser = process.env.CHROME_CDP_URL
+  ? await chromium.connectOverCDP(process.env.CHROME_CDP_URL)
+  : await chromium.launch({headless:true});
+const context = await browser.newContext({viewport:{width:1440,height:900}, acceptDownloads:true});
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+const directory = await mkdtemp(join(tmpdir(), 'ndcalc-test-'));
+const check = async (description, run) => {await run(); console.log('✓ ' + description);};
+const coord = () => page.locator('.coordinate-label').textContent();
+const text = c => page.locator(`[data-coord='${JSON.stringify(c)}'] .cell-text`).first().textContent();
+const press = async (...keys) => {
+  for (const key of keys) await page.keyboard.press(key);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+};
+const clickText = label => page.getByRole('button', {name:label, exact:true}).click();
+const edit = async (source, formula = false) => {
+  await press(formula ? 'f' : 'Enter');
+  await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill(source);
+  await press('Control+Enter');
+  await page.getByRole('dialog').waitFor({state:'hidden'});
+};
+const go = async (x,y) => {
+  await page.locator('body').click({position:{x:2,y:2}}); // leave input focus
+  await press('g', ...String(x).split(''), 'Enter', 'G', ...String(y).split(''), 'Enter');
+};
+const create = async (title,n) => {
+  await clickText('Home');
+  await clickText('New table');
+  await page.getByRole('textbox', {name:'Table title'}).fill(title);
+  await page.getByRole('spinbutton', {name:'Dimension count'}).fill(String(n));
+  await clickText('Create table');
+  await page.locator('.coordinate-label').waitFor();
+};
+const addNamed = async (name,source,formula=false) => {
+  await page.locator('body').click({position:{x:2,y:2}});
+  await press('n');
+  await page.getByRole('textbox', {name:'Cell name'}).fill(name);
+  if (formula) await page.getByRole('button', {name:/^ƒ Formula/}).click();
+  await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill(source);
+  await press('Control+Enter');
+};
+const waitText = async (c,expected) => {
+  await page.waitForFunction(({c,expected}) => document.querySelector(`[data-coord='${JSON.stringify(c)}'] .cell-text`)?.textContent === expected, {c,expected});
+};
+try {
+  await page.goto(process.env.NDCALC_URL || 'http://localhost:8080');
+  await page.getByRole('grid').waitFor();
+  await check('the exact requested dimension rotation sequence', async () => {
+    for (const [key,expected] of [['3',[2,3]],['1',[3,1]],['1',[1,0]],['1',[0,1]],['2',[1,2]],['1',[2,1]],['2',[1,2]]]) {
+      await press(key);
+      await page.waitForFunction(expected => [...document.querySelectorAll('.plane-toolbar select')].map(el=>+el.value).join() === expected.join(), expected);
+    }
+  });
+  await check('named edits propagate to computed cells', async () => {
+    await clickText('Edit named cell multiplier');
+    await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill('2');
+    await press('Control+Enter');
+    await waitText([3,1,0,0,0], '269');
+  });
+  await check('negative goto, block filling, copy/paste, and undo', async () => {
+    await go(-3,-2);
+    assert.equal(await coord(), '[-3,-2,0,0,0]');
+    await press('v','ArrowRight','ArrowDown');
+    assert.equal(await page.locator('.selection-count').textContent(), '4 selected');
+    await edit('7');
+    for (const [x,y] of [[-3,-2],[-2,-2],[-3,-1],[-2,-1]]) assert.equal(await text([x,y,0,0,0]), '7');
+    await press('v','ArrowLeft','ArrowUp','y');
+    await go(6,2); await press('p');
+    await waitText([6,2,0,0,0], '7');
+    await press('u'); await waitText([6,2,0,0,0], '');
+    await press('Control+Shift+z'); await waitText([6,2,0,0,0], '7');
+  });
+  await check('values may be functions; formulas may call them', async () => {
+    await go(0,9); await edit('x => x * 3');
+    await go(1,9); await edit('(a,b,...rest) => $(0,b,...rest)(14)', true);
+    await waitText([1,9,0,0,0], '42');
+  });
+  await check('named formulas receive their string coordinate', async () => {
+    await addNamed('input','21');
+    await addNamed('double', 'name => name === "double" ? $("input") * 2 : 0', true);
+    await addNamed('__proto__', '42');
+    await addNamed('constructor', '99');
+    await go(2,9); await edit('(a,b,...rest) => $("double") + 1', true);
+    await waitText([2,9,0,0,0], '43');
+  });
+  await check('cycles show errors without breaking the editor', async () => {
+    await go(3,9); await edit('(a,b,...rest) => $(a,b,...rest)', true);
+    assert.match(await text([3,9,0,0,0]), /Circular reference/);
+    await press('u'); await waitText([3,9,0,0,0], '');
+  });
+  await check('formatting predicates, named matches, reordering, CSS cascade', async () => {
+    await clickText('Rules');
+    await clickText('Add formatting rule');
+    await page.getByRole('textbox', {name:'Rule name'}).fill('named highlight');
+    await page.getByRole('textbox', {name:'Coordinate predicate'}).fill('name => name === "double"');
+    await page.getByRole('textbox', {name:'Value predicate'}).fill('v => ["heading"]');
+    await clickText('Apply rule');
+    await clickText('Move named highlight up');
+    const names = await page.locator('.rule-name').allTextContents();
+    assert.equal(names[2], 'named highlight');
+    await page.getByRole('button',{name:/^Named cells/}).click();
+    const named = page.locator('.named-card').filter({has:page.getByRole('button',{name:'$ double',exact:true})});
+    assert.equal(await named.locator('.heading').count(), 1);
+    await clickText('CSS');
+    await page.getByRole('textbox',{name:'Table CSS'}).fill('.heading { color: rgb(255, 100, 50); }');
+    await clickText('Apply CSS');
+    const heading = page.locator('[data-coord="[0,0,0,0,0]"] .heading');
+    // Current viewport can be below origin; return to it to inspect the stylesheet.
+    await go(0,0);
+    assert.equal(await heading.evaluate(el => getComputedStyle(el).color), 'rgb(255, 100, 50)');
+  });
+  await check('help and themes are toggleable', async () => {
+    await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 1);
+    await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 0);
+    await clickText('Light theme'); assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
+  });
+  await check('3D is read-only and shows 27 cells', async () => {
+    await page.locator('body').click({position:{x:2,y:2}});
+    await press('t'); assert.equal(await page.locator('.cube-cell').count(), 27);
+    await press('Enter'); assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.getByRole('button', {name:'Edit',exact:true}).isDisabled(), true);
+    await press('Control+z'); // undo is also disabled in the preview
+    await page.getByLabel('3D X dimension').selectOption('3');
+    await page.getByLabel('3D X dimension').blur();
+    await press('ArrowRight');
+    assert.equal(await coord(), '[0,0,1,0,0]');
+    await press('t');
+    await page.getByLabel('X dimension', {exact:true}).selectOption('1');
+    await page.getByLabel('Dimension 3 slice coordinate').fill('0');
+    await page.getByLabel('Dimension 3 slice coordinate').blur();
+  });
+  await check('JSON download/upload preserves sources and creates a trusted copy', async () => {
+    const downloadPromise = page.waitForEvent('download');
+    await clickText('Export');
+    const download = await downloadPromise;
+    const path = join(directory, 'roundtrip.json'); await download.saveAs(path);
+    await page.getByLabel('Import JSON document').setInputFiles(path);
+    await page.getByRole('dialog',{name:'Trust this document?'}).waitFor();
+    assert.equal(await page.getByRole('dialog',{name:'Trust this document?'}).count(), 1);
+    await clickText('Trust & open');
+    await go(1,9); await waitText([1,9,0,0,0], '42');
+    await clickText('Home'); await page.locator('.document-card').nth(1).waitFor();
+    assert.equal(await page.locator('.document-card').count(), 2);
+  });
+  await check('IndexedDB documents and theme survive reload', async () => {
+    await page.reload(); await page.locator('.document-card').first().waitFor();
+    assert.equal(await page.locator('.document-card').count(), 2);
+    assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
+    await page.locator('.document-open').first().click();
+    await go(2,9); await waitText([2,9,0,0,0], '43');
+    await page.getByRole('button',{name:/^Named cells/}).click();
+    for (const [name,value] of [['__proto__','42'],['constructor','99']]) {
+      const card = page.locator('.named-card').filter({has:page.getByRole('button',{name:'$ '+name,exact:true})});
+      assert.equal(await card.locator('.cell-text').textContent(),value);
+    }
+  });
+  await check('0D has exactly one accessible numeric cell', async () => {
+    await create('zero',0);
+    assert.equal(await page.locator('td[role=gridcell]').count(), 1);
+    await press('ArrowRight','ArrowDown','1'); assert.equal(await coord(), '[]');
+    await edit('({answer:42})'); assert.equal(await text([]), '{"answer":42}');
+    await addNamed('zero_name', '() => $(0,0,0).answer', true);
+    await clickText('Home');
+    await page.locator('.document-open').filter({hasText:'zero'}).click();
+    assert.equal(await text([]), '{"answer":42}');
+  });
+  await check('1D through 5D support editing and fixed inactive dimensions', async () => {
+    for (let n=1;n<=5;n++) {
+      await create('rank-'+n,n);
+      assert.equal(await page.getByLabel('X dimension').inputValue(),'1');
+      assert.equal(await page.getByLabel('Y dimension').inputValue(),n===1?'0':'2');
+      if (n>=3) {
+        const input = page.getByLabel(`Dimension ${n} slice coordinate`);
+        await input.focus(); await page.keyboard.press('Control+A');
+        await page.keyboard.type('-2', {delay:25});
+        await input.blur();
+      }
+      await edit('123n');
+      const at = Array(n).fill(0); if (n>=3) at[n-1]=-2;
+      assert.equal(await text(at),'123n');
+      await press('ArrowRight'); at[0]=1; assert.equal(await coord(),JSON.stringify(at));
+      await press('ArrowUp'); if(n>1) at[1]=-1; assert.equal(await coord(),JSON.stringify(at));
+    }
+  });
+  assert.deepEqual(errors, []);
+  console.log('\nAll browser workflows passed.');
+} catch (error) {
+  console.error('Browser errors:', errors);
+  console.error('Page:', (await page.locator('body').innerText()).slice(-2000));
+  await page.screenshot({path:'/tmp/ndcalc-e2e-failure.png'});
+  throw error;
+} finally {
+  await context.close();
+  await browser.close(); // For CDP, disconnect the client without closing the user's browser.
+  await rm(directory,{recursive:true,force:true});
+}

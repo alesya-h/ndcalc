@@ -1,0 +1,21 @@
+{
+  "name": "ndcalc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-first n-dimensional JavaScript spreadsheet",
+  "scripts": {
+    "dev": "shadow-cljs watch app",
+    "build": "shadow-cljs release app",
+    "test": "shadow-cljs compile test && node target/tests.js",
+    "serve": "node scripts/serve.mjs",
+    "test:e2e": "node scripts/browser-test.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0",
+    "shadow-cljs": "^3.3.0"
+  }
+}
