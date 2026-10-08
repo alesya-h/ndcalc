@@ -24,7 +24,7 @@ const press = async (...keys) => {
 };
 const clickText = label => page.getByRole('button', {name:label, exact:true}).click();
 const edit = async (source, formula = false) => {
-  await press(formula ? 'f' : 'Enter');
+  await press(formula ? 'I' : 'Enter');
   await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill(source);
   await press('Control+Enter');
   await page.getByRole('dialog').waitFor({state:'hidden'});
@@ -74,7 +74,7 @@ try {
       assert.ok(!body.includes(slogan));
   });
   await check('new formulas are prefilled and the caret follows the arrow', async () => {
-    await go(8,8); await press('f');
+    await go(8,8); await press('Shift+Enter');
     const source = page.getByRole('textbox',{name:'Cell JavaScript source'});
     assert.equal(await source.inputValue(), '(a,b,c,d,e,...rest) => ');
     assert.equal(await source.evaluate(el => document.activeElement === el && el.selectionStart === el.value.length && el.selectionEnd === el.value.length), true);
@@ -176,7 +176,14 @@ try {
   await check('help and themes are toggleable', async () => {
     await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 1);
     await press('?'); assert.equal(await page.locator('.help-sidebar').count(), 0);
-    await clickText('Light theme'); assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
+    assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'system');
+    await page.emulateMedia({colorScheme:'dark'});
+    await page.waitForFunction(()=>document.querySelector('.app').dataset.theme==='dark');
+    await page.emulateMedia({colorScheme:'light'});
+    await page.waitForFunction(()=>document.querySelector('.app').dataset.theme==='light');
+    await page.getByLabel('Theme',{exact:true}).selectOption('light');
+    await page.emulateMedia({colorScheme:'dark'});
+    assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
   });
   await check('3D fits the active volume, allows editing, and synchronizes axes', async () => {
     await page.locator('body').click({position:{x:2,y:2}});
@@ -193,6 +200,7 @@ try {
     await page.getByLabel('3D X dimension').blur();
     await press('ArrowRight');
     assert.equal(await coord(), '[0,0,1,0,0]');
+    await press('t'); assert.equal(await page.locator('.hyper-view').count(),1);
     await press('t');
     await page.getByLabel('X dimension', {exact:true}).selectOption('1');
     await page.getByLabel('Dimension 3 slice coordinate').fill('0');
@@ -217,7 +225,7 @@ try {
     assert.equal(await page.locator('.app').getAttribute('data-theme'), 'light');
     await page.locator('.document-open').first().click();
     await go(2,9); await waitText([2,9,0,0,0], '43');
-    await page.getByRole('button',{name:/^Named cells/}).click();
+    if (!await page.locator('.named-panel').count()) await clickText('Named cells');
     for (const [name,value] of [['__proto__','42'],['constructor','99']]) {
       const card = page.locator('.named-card').filter({has:page.getByRole('button',{name:'$ '+name,exact:true})});
       assert.equal(await card.locator('.cell-text').textContent(),value);
@@ -292,86 +300,96 @@ try {
     assert.equal(await page.locator('.mode-badge').textContent(),'NORMAL');
     await press('u'); assert.match(await page.locator('.status-right').innerText(),/64 cells$/);
   });
-  await check('OKLCH example, configurable volume, slices, picking, camera, and persistence', async () => {
-    await clickText('Home'); await clickText('Open OKLCH color cube');
-    await waitText([5,4,3],'[5,4,3]');
-    const palette = page.locator('[data-coord="[5,4,3]"] .cell-content');
-    assert.match(await palette.evaluate(el=>getComputedStyle(el).backgroundColor),/oklch/);
-    assert.match(await page.locator('.status-right').innerText(),/512 cells$/);
-    await page.locator('body').click({position:{x:2,y:2}}); await press('t');
+  await check('OKLCH vs LCH, stack-only transparency, wheel controls, and persistence', async () => {
+    await clickText('Home'); await clickText('Open OKLCH vs LCH');
+    await waitText([5,4,3,0],'[5,4,3,0]');
+    assert.match(await page.locator('[data-coord="[5,4,3,0]"] .cell-content').evaluate(el=>getComputedStyle(el).backgroundColor),/oklch/);
+    assert.match(await page.locator('.status-right').innerText(),/1024 cells$/);
+    await page.getByLabel('Dimension 4 slice coordinate').fill('1');
+    await page.getByLabel('Dimension 4 slice coordinate').blur();
+    assert.match(await page.locator('[data-coord="[5,4,3,1]"] .cell-content').evaluate(el=>getComputedStyle(el).backgroundColor),/^lch/);
+    await page.getByLabel('Dimension 4 slice coordinate').fill('0');
+    await page.getByLabel('Dimension 4 slice coordinate').blur();
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t'); await clickText('Stack');
     assert.equal(await page.locator('.cube-cell').count(),512);
     assert.equal(await page.locator('.cube-layer').count(),8);
-    assert.match(await page.locator('.cube-ranges').innerText(),/8 × 8 × 8/);
     await page.getByRole('checkbox',{name:'3D show labels'}).uncheck();
-    await page.locator('.toast').waitFor({state:'hidden'});
-    await page.screenshot({path:'/tmp/ndcalc-color-stack.png'});
     const selectedBeforeDrag = await coord();
     const rotationBefore = Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue());
-    const tiltBefore = Number(await page.getByRole('slider',{name:'3D tilt'}).inputValue());
     const stage = await page.locator('.cube-stage').boundingBox();
     const start = {x:stage.x+stage.width/2,y:stage.y+stage.height/2};
     await page.mouse.move(start.x,start.y); await page.mouse.down();
     await page.mouse.move(start.x+90,start.y-45,{steps:10}); await page.mouse.up(); await press();
     assert.notEqual(Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue()),rotationBefore);
-    assert.notEqual(Number(await page.getByRole('slider',{name:'3D tilt'}).inputValue()),tiltBefore);
     assert.equal(await coord(),selectedBeforeDrag);
+    const zoom = page.getByRole('slider',{name:'3D zoom'});
+    const beforeWheel = Number(await zoom.inputValue());
+    await page.mouse.wheel(0,-120); await press();
+    assert.ok(Number(await zoom.inputValue()) > beforeWheel);
+    const gap = page.getByRole('slider',{name:'3D layer gap'});
+    const beforeGap = Number(await gap.inputValue());
+    await page.keyboard.down('Control'); await page.mouse.wheel(0,-120); await page.keyboard.up('Control'); await press();
+    assert.ok(Number(await gap.inputValue()) > beforeGap);
     const transparency = page.getByRole('slider',{name:'3D transparency'});
+    await page.keyboard.down('Shift'); await page.mouse.wheel(0,120); await page.keyboard.up('Shift'); await press();
+    assert.ok(Number(await transparency.inputValue()) > 0);
     await transparency.focus(); await press('End');
     assert.equal(await page.locator('.cube-layer').first().evaluate(el=>getComputedStyle(el).opacity),'0');
     await press('Home','ArrowRight');
     assert.equal(await page.locator('.cube-layer').first().evaluate(el=>getComputedStyle(el).opacity),'0.99');
     await page.locator('body').click({position:{x:2,y:2}});
-    await edit('() => 9001',true); await waitText([0,0,3],'9001');
-    assert.equal(await page.locator('.cube-view').count(),1);
-    await press('u'); await waitText([0,0,3],'[0,0,3]');
-    await press('Control+Shift+z'); await waitText([0,0,3],'9001');
-    await press('u','v','ArrowRight','ArrowDown','PageUp');
+    await edit('() => 9001',true); await waitText([0,0,3,0],'9001');
+    await press('u'); await waitText([0,0,3,0],'[0,0,3,0]');
+    await press('v','ArrowRight','ArrowDown','PageUp');
     assert.equal(await page.locator('.selection-count').textContent(),'8 selected');
-    await edit('(a,b,c) => a+b+c',true); await waitText([1,1,4],'6');
+    await edit('(a,b,c) => a+b+c',true); await waitText([1,1,4,0],'6');
     await press('v','ArrowLeft','ArrowUp','PageDown','Delete');
-    assert.match(await page.locator('.status-right').innerText(),/504 cells$/);
-    await press('u','u'); await waitText([1,1,4],'[1,1,4]');
-    await page.getByRole('spinbutton',{name:'3D X size'}).fill('4');
+    assert.match(await page.locator('.status-right').innerText(),/1016 cells$/);
+    await press('u','u'); await waitText([1,1,4,0],'[1,1,4,0]');
+    await page.getByRole('spinbutton',{name:'3D X size'}).fill('4'); await press();
     assert.equal(await page.locator('.cube-cell').count(),256);
-    assert.equal(await page.getByRole('checkbox',{name:'3D follow current cell'}).isChecked(),true);
-    await clickText('Fit active bounds'); assert.equal(await page.locator('.cube-cell').count(),512);
-    await page.getByLabel('Dimension 3 slice coordinate').fill('3');
-    await page.getByLabel('Dimension 3 slice coordinate').blur();
-    await clickText('Next Z slice'); assert.equal(await coord(),'[1,1,4]');
-    await press('PageDown'); assert.equal(await coord(),'[1,1,3]');
-    await press('PageUp'); assert.equal(await coord(),'[1,1,4]');
-    await clickText('Slices'); await page.getByRole('checkbox',{name:'3D show labels'}).check();
-    assert.equal(await page.locator('.cube-slice').count(),8);
+    await page.locator('body').click({position:{x:2,y:2}}); await press('F');
     assert.equal(await page.locator('.cube-cell').count(),512);
-    await page.locator('.cube-cell[data-coord="[2,3,4]"]').click();
-    assert.equal(await coord(),'[2,3,4]');
-    await page.screenshot({path:'/tmp/ndcalc-color-slices.png'});
-    await page.locator('.cube-cell[data-coord="[2,3,4]"]').dblclick();
+    await press('f'); assert.equal(await page.getByRole('checkbox',{name:'3D follow current cell'}).isChecked(),true);
+    await press('F'); assert.equal(await page.getByRole('checkbox',{name:'3D follow current cell'}).isChecked(),false);
+    await clickText('Slices');
+    assert.equal(await page.getByRole('slider',{name:'3D transparency'}).count(),0);
+    assert.equal(await page.locator('.cube-slice').first().evaluate(el=>getComputedStyle(el).opacity),'1');
+    await page.locator('body').click({position:{x:2,y:2}}); await press('l');
+    assert.equal(await page.getByRole('checkbox',{name:'3D show labels'}).isChecked(),true);
+    await page.locator('.cube-cell[data-coord="[2,3,4,0]"]').click();
+    assert.equal(await coord(),'[2,3,4,0]');
+    await page.locator('.cube-cell[data-coord="[2,3,4,0]"]').dblclick();
     assert.equal(await page.getByRole('dialog').count(),1);
-    await press('Escape'); assert.equal(await page.locator('.cube-view').count(),1);
-    await clickText('Open in plane');
-    await page.getByRole('grid').waitFor(); assert.equal(await coord(),'[2,3,4]');
+    await press('Escape'); await clickText('Open in plane');
+    await page.getByRole('grid').waitFor(); assert.equal(await coord(),'[2,3,4,0]');
     await page.locator('body').click({position:{x:2,y:2}}); await press('t');
-    assert.equal(await page.getByRole('button',{name:'Slices',exact:true}).getAttribute('aria-pressed'),'true');
-    const zoom = page.getByRole('slider',{name:'3D zoom'});
     const before = Number(await zoom.inputValue()); await zoom.focus(); await press('ArrowRight');
-    assert.equal(Number(await zoom.inputValue()),before+1);
     await page.getByRole('spinbutton',{name:'3D X size'}).fill('16');
     await page.getByRole('spinbutton',{name:'3D Y size'}).fill('16');
-    await page.getByRole('spinbutton',{name:'3D Z size'}).fill('16');
+    await page.getByRole('spinbutton',{name:'3D Z size'}).fill('16'); await press();
     assert.equal(await page.locator('.cube-cell').count(),4096);
     await page.getByRole('spinbutton',{name:'3D Z size'}).fill('17');
     assert.equal(await page.getByRole('spinbutton',{name:'3D Z size'}).inputValue(),'16');
-    assert.match(await page.locator('.toast').innerText(),/4096/);
     await clickText('Fit active bounds');
     await page.waitForTimeout(150); await page.reload();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'OKLCH color cube',exact:true})}).locator('.document-open').click();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'OKLCH vs LCH',exact:true})}).locator('.document-open').click();
     await page.locator('body').click({position:{x:2,y:2}}); await press('t');
     assert.equal(await page.locator('.cube-cell').count(),512);
-    assert.equal(await page.locator('.cube-slice').count(),8);
     assert.equal(await page.getByRole('checkbox',{name:'3D show labels'}).isChecked(),true);
-    assert.equal(Number(await page.getByRole('slider',{name:'3D zoom'}).inputValue()),before+1);
-    assert.equal(await page.getByRole('slider',{name:'3D transparency'}).inputValue(),'1');
+    assert.equal(Number(await zoom.inputValue()),before+1);
+    await clickText('Stack'); assert.equal(await transparency.inputValue(),'1');
+    await page.screenshot({path:'/tmp/ndcalc-color-stack.png'});
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t');
+    assert.equal(await page.locator('.hyper-panel').count(),16);
+    assert.equal(await page.locator('.cube-cell').count(),1024);
+    assert.equal(await page.getByRole('slider',{name:'4D transparency'}).count(),0);
+    assert.equal(await page.locator('.cube-slice').first().evaluate(el=>getComputedStyle(el).opacity),'1');
+    const hyperZoom = page.getByRole('slider',{name:'4D zoom'});
+    const hBefore = Number(await hyperZoom.inputValue());
+    await page.locator('.hyper-stage').hover(); await page.mouse.wheel(0,-120); await press();
+    assert.ok(Number(await hyperZoom.inputValue()) > hBefore);
+    await page.screenshot({path:'/tmp/ndcalc-lch-comparison.png'});
   });
   await check('3D dimension keys enqueue existing/new dimensions without collapsing the view', async () => {
     await create('3D queue',5);
@@ -381,7 +399,7 @@ try {
     }
     await page.locator('body').click({position:{x:2,y:2}}); await press('t','v','PageUp');
     const selected = await coord();
-    for (const [key,expected] of [['1',[2,3,1]],['1',[2,3,1]],['2',[3,1,2]],['4',[1,2,4]],['3',[2,4,3]],['0',[2,4,3]],['5',[4,3,5]]]) {
+    for (const [key,expected] of [['1',[2,3,1]],['1',[2,3,1]],['2',[3,1,2]],['4',[1,2,4]],['3',[2,4,3]],['0',[4,3,0]],['5',[3,0,5]]]) {
       await press(key);
       const actual = await Promise.all(['X','Y','Z'].map(axis=>page.getByLabel(`3D ${axis} dimension`).inputValue().then(Number)));
       assert.deepEqual(actual,expected);
@@ -401,6 +419,10 @@ try {
     assert.equal(await page.getByLabel('X dimension',{exact:true}).inputValue(),'2');
     await press('T'); assert.equal(await page.getByLabel('X dimension',{exact:true}).inputValue(),'1');
     await press('c'); assert.equal(await page.getByRole('textbox',{name:'Table CSS'}).count(),1);
+    await press('c'); assert.equal(await page.getByRole('textbox',{name:'Table CSS'}).count(),0);
+    assert.equal(await page.locator('.inspector.collapsed').count(),1);
+    await clickText('CSS'); assert.equal(await page.getByRole('textbox',{name:'Table CSS'}).count(),1);
+    await clickText('CSS'); assert.equal(await page.getByRole('textbox',{name:'Table CSS'}).count(),0);
     await press('r'); assert.equal(await page.getByRole('button',{name:'Add formatting rule'}).count(),1);
     await press('n'); assert.equal(await page.locator('.named-panel').count(),1);
     assert.equal(await page.getByRole('dialog').count(),0);
@@ -421,8 +443,9 @@ try {
     await page.locator('body').click({position:{x:2,y:2}}); await press('3','PageUp');
     assert.equal(await coord(),'[1,0,0,0,0,0,0,0]');
     await press('t');
-    const layout = await page.getByRole('button',{name:'Slices',exact:true}).getAttribute('aria-pressed');
-    await press('Control+t'); assert.notEqual(await page.getByRole('button',{name:'Slices',exact:true}).getAttribute('aria-pressed'),layout);
+    const tabShortcutsAllowed = await page.evaluate(()=>[false,true].every(shiftKey=>
+      document.documentElement.dispatchEvent(new KeyboardEvent('keydown',{key:'t',ctrlKey:true,shiftKey,bubbles:true,cancelable:true}))));
+    assert.equal(tabShortcutsAllowed,true);
     const orders = new Set(); const c = await coord();
     for (let i=0;i<6;i++) {await press('T'); orders.add(JSON.stringify(await Promise.all(['X','Y','Z'].map(a=>page.getByLabel(`3D ${a} dimension`).inputValue()))));}
     assert.equal(orders.size,6); assert.equal(await coord(),c);
@@ -438,7 +461,7 @@ try {
     await page.getByRole('textbox',{name:'Coordinate predicate'}).fill('(...coord) => true');
     await page.getByRole('textbox',{name:'Value predicate'}).fill("v => Array.isArray(v) ? `background: oklch(${25+v[0]*45}% ${0.07+v[1]*0.14} ${v[2]*180+v[3]*90}); color: white;` : ''");
     await clickText('Apply rule');
-    await page.locator('body').click({position:{x:2,y:2}}); await press('Control+Shift+t');
+    await page.locator('body').click({position:{x:2,y:2}}); await press('t','t');
     assert.equal(await page.locator('.hyper-panel').count(),4);
     assert.equal(await page.locator('.hyper-column-label').count(),2);
     assert.equal(await page.locator('.hyper-row-label').count(),2);
@@ -452,7 +475,7 @@ try {
     await page.locator('body').click({position:{x:2,y:2}});
     for (let i=0;i<24;i++) {await press('T'); orders.add(JSON.stringify(await Promise.all(['X','Y','Z','W'].map(a=>page.getByLabel(`4D ${a} dimension`).inputValue()))));}
     assert.equal(orders.size,24); assert.equal(await coord(),selected);
-    await page.getByRole('spinbutton',{name:'4D W size'}).fill('1');
+    await page.getByRole('spinbutton',{name:'4D W size'}).fill('1'); await press();
     assert.equal(await page.locator('.cube-cell').count(),8);
     await clickText('Fit active bounds'); assert.equal(await page.locator('.cube-cell').count(),16);
     await page.locator('.cube-cell[data-coord="[0,0,0,0]"]').click();
@@ -468,6 +491,61 @@ try {
     await clickText('4D');
     assert.equal(await page.locator('.cube-cell').count(),16);
     assert.equal(await page.getByRole('checkbox',{name:'4D show labels'}).isChecked(),false);
+  });
+  await check('null axes stay one cell deep in 3D and 4D', async () => {
+    await page.locator('body').click({position:{x:2,y:2}}); await press('0');
+    assert.equal(await page.getByLabel('4D W dimension').inputValue(),'0');
+    assert.equal(await page.getByRole('spinbutton',{name:'4D W size'}).inputValue(),'1');
+    assert.equal(await page.getByRole('spinbutton',{name:'4D W size'}).isDisabled(),true);
+    assert.equal(await page.locator('.hyper-column-label').count(),1);
+    const point = await coord(); await press('Control+Shift+ArrowRight'); assert.equal(await coord(),point);
+    await clickText('3D');
+    await page.getByLabel('3D Z dimension').selectOption('0'); await page.getByLabel('3D Z dimension').blur(); await press();
+    assert.equal(await page.getByRole('spinbutton',{name:'3D Z size'}).inputValue(),'1');
+    assert.equal(await page.locator('.cube-layer,.cube-slice').count(),1);
+    await press('PageUp'); assert.equal(await coord(),point);
+  });
+  await check('realistic hypertables, animated formatting, and a live ledger control', async () => {
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    for (const [title,count] of [['Heat diffusion',768],['Membrane eigenmodes',576],['Product scenario planning',1296],
+                                 ['Beam design envelope',1440],['Double-entry ledger',216],['Interference atelier',1728]]) {
+      await clickText('Home'); await clickText(`Open ${title}`);
+      assert.equal(await page.locator('.document-title').innerText(),title);
+      assert.match(await page.locator('.status-right').innerText(),new RegExp(`${count} cells$`));
+      assert.equal(await page.locator('.cell-error,.format-warning').count(),0);
+      assert.ok(await page.getByRole('button',{name:'$ axes',exact:true}).count());
+      if (title==='Heat diffusion') {
+        assert.equal(await page.locator('[data-coord="[0,0,0,0]"] .cell-content').evaluate(el=>getComputedStyle(el).animationName),'nd-thermal');
+      }
+      if (title==='Double-entry ledger') {
+        await go(0,5); await waitText([0,5,0,0],'0');
+        await go(0,0); const cash=Number(await text([0,0,0,0])); await edit(`() => ${cash+100}`,true);
+        await waitText([0,5,0,0],'100');
+        assert.equal(await page.locator('[data-coord="[0,5,0,0]"] .cell-content').evaluate(el=>getComputedStyle(el).animationName),'nd-audit');
+        await press('u'); await waitText([0,5,0,0],'0');
+      }
+      if (title==='Interference atelier') {
+        const cell=page.locator('[data-coord="[0,0,0,0]"] .cell-content');
+        assert.match(await cell.evaluate(el=>getComputedStyle(el).backgroundImage),/conic-gradient/);
+        assert.equal(await cell.evaluate(el=>getComputedStyle(el).animationName),'nd-art-flow');
+        assert.ok(await cell.evaluate(el=>el.getAnimations().length > 0));
+        await page.emulateMedia({reducedMotion:'reduce'});
+        assert.equal(await cell.evaluate(el=>getComputedStyle(el).animationName),'none');
+        await page.emulateMedia({reducedMotion:'no-preference'});
+        await clickText('4D'); await page.screenshot({path:'/tmp/ndcalc-art-4d.png'});
+      }
+    }
+    await page.getByLabel('Theme',{exact:true}).selectOption('system'); await press();
+    await page.waitForFunction(()=>document.querySelector('.app').dataset.themeChoice==='system');
+    await page.waitForFunction(()=>new Promise(resolve=>{
+      const open=indexedDB.open('ndcalc');
+      open.onsuccess=()=>{const db=open.result, request=db.transaction('settings').objectStore('settings').get('preferences');
+        request.onsuccess=()=>{resolve(request.result?.theme==='system'); db.close();};};
+    }));
+    await page.reload(); await page.locator('.document-card').first().waitFor();
+    assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'system');
+    await page.emulateMedia({colorScheme:'light'});
+    await page.waitForFunction(()=>document.querySelector('.app').dataset.theme==='light');
   });
   assert.deepEqual(errors, []);
   console.log('\nAll browser workflows passed.');

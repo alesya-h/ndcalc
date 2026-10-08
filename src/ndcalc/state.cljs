@@ -6,7 +6,7 @@
             [ndcalc.demo :as demo]
             [ndcalc.preview :as preview]))
 
-(defonce app (r/atom {:route :loading :doc nil :documents [] :theme "dark"
+(defonce app (r/atom {:route :loading :doc nil :documents [] :theme "system" :system-dark false
                      :help false :panel :named :mode :normal :anchor nil
                      :named-focus nil :editor nil :dialog nil :command nil
                      :viewport [-1 -1] :grid-size [8 16] :view :plane
@@ -36,17 +36,22 @@
 (defn volume? [] (boolean (#{:cube :hypercube} (:view @app))))
 (defn view-axes []
   (case (:view @app) :cube (:cube-axes @app) :hypercube (:hyper-axes @app) (mapping)))
-(defn navigation-axes []
-  (let [axes (view-axes) n (get-in @app [:doc :dimensions])]
-    (into (vec axes) (remove (set axes)
-                            (distinct (filter #(and (e/safe-integer? %) (<= 1 % n))
-                                              (concat (get-in @app [:doc :view :expelled]) (range 1 (inc n)))))))))
-(defn remember-expelled! [old-axes new-axes]
+(defn axis-order []
   (let [n (get-in @app [:doc :dimensions])]
-    (swap! app update-in [:doc :view :expelled]
-           (fn [history]
-             (vec (distinct (filter #(and (e/safe-integer? %) (<= 1 % n) (not ((set new-axes) %)))
-                                    (concat (remove (set new-axes) old-axes) history))))))))
+    (vec (distinct (filter #(and (e/safe-integer? %) (<= 0 % n))
+                          (concat (get-in @app [:doc :view :axis-order])
+                                  (get-in @app [:doc :view :expelled]) (range 1 (inc n)) [0]))))))
+(defn navigation-axes []
+  (let [axes (view-axes)]
+    (into (vec axes) (remove (set axes) (axis-order)))))
+(defn remember-expelled! [old-axes new-axes]
+  ;; Keep active axes in the global history too. Changing view must not destroy
+  ;; their position, or the hidden order would depend on the previous view.
+  (let [n (get-in @app [:doc :dimensions])
+        lost (filter #(and (<= 0 % n) (not ((set new-axes) %))) old-axes)]
+    (when (seq lost)
+      (swap! app assoc-in [:doc :view :axis-order]
+             (vec (distinct (concat lost (axis-order))))))))
 
 (defn selected-coords []
   (if (:named-focus @app) [(coord)]
@@ -86,7 +91,9 @@
   (when (e/safe-integer? value)
     (select! (e/set-axis (get-in @app [:doc :view :coord]) dimension value) false)))
 
-(defn cube-options [] (merge preview/default-options (:cube-options @app)))
+(defn cube-options []
+  (let [options (merge preview/default-options (:cube-options @app))]
+    (update options :size #(mapv (fn [d size] (if (zero? d) 1 size)) (:cube-axes @app) %))))
 (defn cube-window []
   (preview/window (:doc @app) (:cube-axes @app) (:size (cube-options)) (:cube-fit @app)))
 
@@ -111,11 +118,14 @@
 (defn move-slot! [slot delta extend?]
   (if-let [dimension (get (navigation-axes) (dec slot))]
     (let [c (get-in @app [:doc :view :coord])]
-      (select! (e/set-axis c dimension (+ (e/axis-value c dimension) delta)) extend?))
+      (when (pos? dimension)
+        (select! (e/set-axis c dimension (+ (e/axis-value c dimension) delta)) extend?)))
     (notify! (str "No dimension in navigation slot " slot "."))))
 (defn move-depth! [delta] (move-slot! 3 delta false))
 
-(defn hyper-options [] (merge preview/hyper-default-options (:hyper-options @app)))
+(defn hyper-options []
+  (let [options (merge preview/hyper-default-options (:hyper-options @app))]
+    (update options :size #(mapv (fn [d size] (if (zero? d) 1 size)) (:hyper-axes @app) %))))
 (defn hyper-window []
   (preview/window (:doc @app) (:hyper-axes @app) (:size (hyper-options)) (:hyper-fit @app)))
 (defn set-hyper-option! [key value]
@@ -135,8 +145,8 @@
            axes-key (if (= view :cube) :cube-axes :hyper-axes)
            fit-key (if (= view :cube) :cube-fit :hyper-fit) old-axes (view-axes)]
        (when-not (and (= rank (count axes) (count (set axes)))
-                      (every? (fn [d] (and (e/safe-integer? d) (<= 1 d n))) axes))
-         (e/fail "Preview axes must be distinct, non-null dimensions."))
+                      (every? (fn [d] (and (e/safe-integer? d) (<= 0 d n))) axes))
+         (e/fail "Preview axes must be distinct dimensions (including null)."))
        (swap! app (fn [s] (cond-> (-> s (assoc axes-key axes)
                                         (assoc-in [:doc :view :mapping] (vec (take 2 axes))))
                            clear-named? (assoc :named-focus nil))))
@@ -155,17 +165,16 @@
   (when (volume?)
     (let [n (get-in @app [:doc :dimensions]) view (:view @app) rank (if (= view :cube) 3 4)
           old-axes (view-axes)]
-      (if (< n rank)
+      (if (< (inc n) rank)
         (do (swap! app assoc :view :plane) (remember-expelled! old-axes (mapping)))
         (set-volume-axes! view
-          (vec (take rank (distinct (filter #(and (e/safe-integer? %) (<= 1 % n))
+          (vec (take rank (distinct (filter #(and (e/safe-integer? %) (<= 0 % n))
                                            (concat (mapping) old-axes (navigation-axes)))))) false)))))
 
 (defn switch! [d]
   (when (and (e/safe-integer? d) (<= 0 d (get-in @app [:doc :dimensions])))
     (if (volume?)
-      (if (zero? d) (notify! "The null dimension is ignored in 3D/4D.")
-        (set-volume-axes! (:view @app) (preview/enqueue-dimension (view-axes) d) true))
+      (set-volume-axes! (:view @app) (preview/enqueue-dimension (view-axes) d) true)
       (let [old-axes (mapping)]
         (swap! app (fn [s] (-> s (assoc :named-focus nil)
                                (update-in [:doc :view :mapping] e/switch-dimension d))))
@@ -179,8 +188,7 @@
 
 (defn set-mapping! [axis d]
   (if (volume?)
-    (if (zero? d) (notify! "The null dimension is ignored in 3D/4D.")
-      (set-volume-axes! (:view @app) (preview/replace-axis (view-axes) axis d) true))
+    (set-volume-axes! (:view @app) (preview/replace-axis (view-axes) axis d) true)
     (let [other (if (= axis 0) 1 0) m (mapping)
           m (if (and (pos? d) (= d (nth m other))) (assoc m other (nth m axis)) m)]
       (let [old-axes (mapping)]
@@ -294,8 +302,8 @@
       (jump! axis (nth (if end? (:end bounds) (:start bounds)) (dec dimension))))))
 
 (defn clipboard-axes [dimensions mapping]
-  ;; Leading slots follow the view's X/Y or X/Y/Z axes; remaining dimensions
-  ;; follow ascending dimension order. Null slots are retained in the plane.
+  ;; Leading slots follow X/Y, X/Y/Z or X/Y/Z/W; remaining dimensions
+  ;; follow ascending dimension order. Every null slot has extent one.
   (into (vec mapping) (remove (set mapping) (range 1 (inc dimensions)))))
 
 (defn yank! []
@@ -364,9 +372,10 @@
     (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
   (ensure-visible!))
 
-(defn open-color-example! []
-  (open-document! (demo/color-document))
-  (swap! app assoc :viewport [0 0] :panel :rules))
+(defn open-example! [make]
+  (open-document! (make))
+  (swap! app assoc :viewport [0 0] :panel :named))
+(defn open-color-example! [] (open-example! demo/color-document))
 
 (defn refresh-documents! []
   (.then (db/all-documents!) #(swap! app assoc :documents %)))
@@ -403,20 +412,34 @@
                      (swap! app assoc :dialog {:type :trust :document doc}))))
           (.catch #(notify! (str "Import failed: " (.-message %))))))))
 
-(defn toggle-theme! [] (swap! app update :theme #(if (= % "dark") "light" "dark")))
+(defn set-theme! [theme]
+  (when (#{"system" "light" "dark"} theme) (swap! app assoc :theme theme)))
+(defn resolved-theme []
+  (if (= "system" (:theme @app)) (if (:system-dark @app) "dark" "light") (:theme @app)))
+(defn toggle-theme! []
+  (set-theme! (case (:theme @app) "system" "light" "light" "dark" "system")))
+(defonce system-media (atom nil))
+(defn install-system-theme! []
+  (when-let [[media listener] @system-media] (.removeEventListener media "change" listener))
+  (let [media (.matchMedia js/window "(prefers-color-scheme: dark)")
+        listener #(swap! app assoc :system-dark (.-matches %))]
+    (swap! app assoc :system-dark (.-matches media))
+    (.addEventListener media "change" listener)
+    (reset! system-media [media listener])))
+(defn toggle-panel! [panel]
+  (swap! app update :panel #(when-not (= % panel) panel)))
 (defn set-view! [view]
   (let [rank (case view :cube 3 :hypercube 4 2)
-        n (get-in @app [:doc :dimensions]) old-axes (view-axes)
+        n (get-in @app [:doc :dimensions])
         axes (if (= view :plane) (mapping)
-               (vec (take rank (filter pos? (navigation-axes)))))]
-    (when (or (= view :plane) (>= n rank))
+               (vec (take rank (distinct (navigation-axes)))))]
+    (when (or (= view :plane) (>= (inc n) rank))
       (swap! app (fn [state] (cond-> (assoc state :view view :named-focus nil :editor nil)
                               (= view :cube) (assoc :cube-axes axes)
                               (= view :hypercube) (assoc :hyper-axes axes))))
-      (if (= view :plane) (remember-expelled! old-axes axes)
+      (when-not (= view :plane)
         (do
           (set-volume-axes! view axes false)
-          (remember-expelled! old-axes axes)
           (let [init-key (if (= view :cube) :cube-initialized :hyper-initialized)]
             (when-not (get @app init-key)
               (swap! app assoc init-key true)
@@ -424,6 +447,35 @@
       (ensure-visible!))))
 (defn toggle-3d! [] (set-view! (if (= :cube (:view @app)) :plane :cube)))
 (defn toggle-4d! [] (set-view! (if (= :hypercube (:view @app)) :plane :hypercube)))
+(defn cycle-view! []
+  (let [n (get-in @app [:doc :dimensions])]
+    (set-view! (case (:view @app)
+                 :plane (if (>= n 2) :cube :plane)
+                 :cube (if (>= n 3) :hypercube :plane)
+                 :plane))))
+(defn fit-volume! [] (when (volume?) ((if (= :cube (:view @app)) fit-cube! fit-hyper!))))
+(defn toggle-follow! []
+  (when (volume?)
+    (let [key (if (= :cube (:view @app)) :cube-fit :hyper-fit)]
+      (if (get @app key) (swap! app assoc key false) (fit-volume!)))))
+(defn toggle-labels! []
+  (when (volume?)
+    (let [cube? (= :cube (:view @app)) options ((if cube? cube-options hyper-options))]
+      ((if cube? set-cube-option! set-hyper-option!) :labels (not (:labels options))))))
+(defn preview-wheel! [event]
+  (when (and (volume?) (not-any? @app [:editor :rule-editor :dialog]))
+    (.preventDefault event)
+    (let [cube? (= :cube (:view @app))
+          options ((if cube? cube-options hyper-options))
+          key (cond (and cube? (.-ctrlKey event)) :gap
+                    (and cube? (.-shiftKey event)) :transparency :else :zoom)
+          raw (if (zero? (.-deltaY event)) (.-deltaX event) (.-deltaY event))
+          delta (* raw (case (.-deltaMode event) 1 16 2 240 1))
+          step (* (js/Math.sign delta) (max 1 (min 10 (js/Math.round (/ (abs delta) 12)))))
+          [low high] (get preview/option-ranges key)
+          value (max low (min high (+ (get options key) (* step (if (= key :transparency) 1 -1)))))]
+      (when-not (zero? delta)
+        ((if cube? set-cube-option! set-hyper-option!) key value)))))
 (defn permute-axes! []
   (let [old-axes (view-axes) axes (preview/next-permutation old-axes)]
     (if (volume?) (set-volume-axes! (:view @app) axes true)
@@ -462,13 +514,11 @@
           (when (typing-target? event) (.blur (.-target event))))
       (or (:editor state) (:rule-editor state) (:dialog state)) nil
       (typing-target? event) nil
-      (and (= "BUTTON" (.. event -target -tagName)) (#{"Enter" " "} key)) nil
+      (and (not shift) (= "BUTTON" (.. event -target -tagName)) (#{"Enter" " "} key)) nil
       (and (not ctrl) (not alt) (#{"h" "?"} key))
       (do (.preventDefault event) (swap! app update :help not))
       (not= :editor (:route state)) nil
       (:command state) (do (.preventDefault event) (command-key! key))
-      (and ctrl (not alt) (= "t" (str/lower-case key)))
-      (do (.preventDefault event) (if shift (toggle-4d!) (toggle-cube-layout!)))
       (#{"ArrowLeft" "ArrowRight" "ArrowUp" "ArrowDown"} key)
       (do (.preventDefault event)
           (if (or ctrl alt)
@@ -490,12 +540,13 @@
       (or ctrl alt) nil
       (re-matches #"[0-9]" key) (do (.preventDefault event) (switch! (js/Number key)))
       :else
-      (when (#{"Tab" "Enter" "i" "f" "v" "y" "p" "u" "Delete" "Backspace"
+      (when (#{"Tab" "Enter" "i" "I" "f" "F" "l" "v" "y" "p" "u" "Delete" "Backspace"
                "g" "G" "b" "B" "e" "E" "d" "D" "n" "N" "c" "r" "t" "T"} key)
         (.preventDefault event)
         (case key
           "Tab" (move! (if shift -1 1) 0 false)
-          ("Enter" "i") (open-editor! nil) "f" (open-editor! "formula")
+          "Enter" (open-editor! (when shift "formula")) "i" (open-editor! nil)
+          "I" (open-editor! "formula") "f" (toggle-follow!) "F" (fit-volume!) "l" (toggle-labels!)
           "v" (toggle-visual!) "y" (yank!) "p" (paste!) "u" (undo! false)
           ("Delete" "Backspace") (clear!)
           "g" (swap! app assoc :command {:axis 0 :text ""})
@@ -503,9 +554,9 @@
           "b" (jump-bound! 0 false) "B" (jump-bound! 1 false)
           "e" (jump-bound! 0 true) "E" (jump-bound! 1 true)
           "d" (clear-axis! 0) "D" (clear-axis! 1)
-          "n" (swap! app assoc :panel :named) "N" (new-named!)
-          "c" (swap! app assoc :panel :css) "r" (swap! app assoc :panel :rules)
-          "t" (toggle-3d!) "T" (permute-axes!) nil)))))
+          "n" (toggle-panel! :named) "N" (new-named!)
+          "c" (toggle-panel! :css) "r" (toggle-panel! :rules)
+          "t" (cycle-view!) "T" (permute-axes!) nil)))))
 
 (defn install-persistence! []
   (add-watch app :persist
@@ -529,7 +580,7 @@
   (-> (db/open!)
       (.then (fn [_] (db/preferences!)))
       (.then (fn [prefs]
-               (when (#{"dark" "light"} (:theme prefs)) (swap! app assoc :theme (:theme prefs)))
+               (when (#{"system" "dark" "light"} (:theme prefs)) (swap! app assoc :theme (:theme prefs)))
                (swap! app assoc :cube-options (preview/restore-options (:cube-options prefs))
                                 :hyper-options (preview/restore-options (:hyper-options prefs) preview/hyper-default-options))
                (install-persistence!)

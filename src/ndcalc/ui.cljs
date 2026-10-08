@@ -4,6 +4,7 @@
             [ndcalc.engine :as e]
             [ndcalc.state :as s]
             [ndcalc.demo :as demo]
+            [ndcalc.examples :as examples]
             [ndcalc.preview :as preview]))
 
 (defn icon [kind & [size]]
@@ -40,9 +41,9 @@
                          (set! (.. event -target -value) ""))}]])
 
 (defn theme-button []
-  (let [dark? (= "dark" (:theme @s/app))]
-    [tool-button (if dark? "Light theme" "Dark theme") (if dark? :sun :moon) s/toggle-theme!
-     {:class "button icon-button"}]))
+  [:select.theme-select {:aria-label "Theme" :title "Color theme" :value (:theme @s/app)
+                        :on-change #(s/set-theme! (.. % -target -value))}
+   [:option {:value "system"} "System"] [:option {:value "light"} "Light"] [:option {:value "dark"} "Dark"]])
 
 (defn topbar []
   (let [{:keys [route doc help]} @s/app]
@@ -67,9 +68,9 @@
 
 (def shortcuts
   [["MOVE" [["← ↑ ↓ →" "Move X/Y"] ["Home / End" "First / last populated cell in this row (plane)"] ["PgUp / PgDn" "Move third axis; last expelled axis in plane"] ["Ctrl+↑ / ↓" "Move third axis"] ["Ctrl+← / →" "Move fourth axis"] ["Alt+↑↓ / ←→" "Move fifth / sixth axes"] ["Ctrl+Alt+arrows" "Move seventh / eighth axes"] ["⇧ + movement" "Extend selection across dimensions"] ["Tab / ⇧Tab" "Next / previous column"]]]
-   ["DIMENSIONS" [["1–9" "Rotate / enqueue a dimension"] ["0" "Null axis (plane only)"] ["T" "Next axis permutation: 2 / 6 / 24"] ["g15 ↵" "Go to X coordinate 15"] ["G-15 ↵" "Go to Y coordinate −15"] ["b / B" "First active column / row"] ["e / E" "Last active column / row"]]]
-   ["EDIT" [["↵ / i" "Edit the current cell"] ["f" "Edit as a formula"] ["v / Ctrl+v" "Toggle visual-block selection"] ["⇧ + arrows" "Extend a selection"] ["y / p" "Copy / paste cells"] ["Del" "Clear cell or selection"] ["d / D" "Clear current column / row"] ["u / Ctrl+z" "Undo"] ["Ctrl+⇧z" "Redo"] ["Ctrl+↵" "Apply an open editor"] ["Esc" "Cancel / normal mode"]]]
-   ["PANELS" [["n" "Named cells"] ["N" "New named cell"] ["c" "CSS"] ["r" "Formatting rules"] ["t" "Plane / 3D"] ["Ctrl+t" "3D stack / slices"] ["Ctrl+⇧t" "Plane / 4D"] ["h" "Toggle this cheatsheet"]]]])
+   ["DIMENSIONS" [["1–9" "Rotate / enqueue a dimension"] ["0" "Null axis: always one cell deep"] ["T" "Next axis permutation: 2 / 6 / 24"] ["g15 ↵" "Go to X coordinate 15"] ["G-15 ↵" "Go to Y coordinate −15"] ["b / B" "First active column / row"] ["e / E" "Last active column / row"]]]
+   ["EDIT" [["↵ / i" "Edit the current cell"] ["⇧↵ / I" "Edit as a formula"] ["v / Ctrl+v" "Toggle visual-block selection"] ["⇧ + arrows" "Extend a selection"] ["y / p" "Copy / paste cells"] ["Del" "Clear cell or selection"] ["d / D" "Clear current column / row"] ["u / Ctrl+z" "Undo"] ["Ctrl+⇧z" "Redo"] ["Ctrl+↵" "Apply an open editor"] ["Esc" "Cancel / normal mode"]]]
+   ["PANELS" [["n" "Named cells"] ["N" "New named cell"] ["c" "CSS"] ["r" "Formatting rules"] ["t" "Cycle 2D → 3D → 4D"] ["f / F" "Follow cell / fit bounds (3D/4D)"] ["l" "Toggle labels (3D/4D)"] ["Scroll" "Zoom (3D/4D)"] ["Ctrl+scroll" "Layer gap (3D)"] ["⇧+scroll" "Transparency (3D stack)"] ["h" "Toggle this cheatsheet"]]]])
 
 (defn help-sidebar []
   [:aside.help-sidebar {:aria-label "Keyboard shortcuts"}
@@ -80,7 +81,7 @@
      [:section.shortcut-section [:h3 heading]
       (for [[key description] keys]
         ^{:key key} [:div.shortcut [:kbd key] [:span description]])])
-   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". Visual selection survives plane and slice changes, selecting every cell between its n-dimensional corners. In 3D/4D, dimension keys append to the axis queue; null is ignored. Hidden axes follow the most recently expelled dimensions, then dimension-number order. Shift extends the same selection in every direction."]])
+   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". Visual selection survives plane and slice changes, selecting every cell between its n-dimensional corners. In 3D/4D, dimension keys append to the axis queue, including null. Hidden axes retain a global recency order across view changes. Shift extends the same selection in every direction."]])
 
 (defn slice-input [dimension value]
   ;; Keep intermediate text (notably "-") so controlled inputs allow negative typing.
@@ -205,12 +206,30 @@
             :on-change #(s/set-cube-option! key (js/Number (.. % -target -value)))}]
    (when (= key :transparency) [:output (str (get (s/cube-options) key) "%")])])
 
+(defn wheel-region [attrs content]
+  ;; React delegates passive wheel events; use a native non-passive listener so
+  ;; Ctrl+wheel adjusts the camera rather than the browser's page zoom.
+  (r/with-let [node (atom nil) owner-ref (atom nil)
+               handler (fn [event] (s/preview-wheel! event))
+               ref-fn (fn [el]
+                        (when @node (.removeEventListener @node "wheel" handler))
+                        (reset! node el)
+                        (when el (.addEventListener el "wheel" handler #js {:passive false}))
+                        (when-let [f @owner-ref] (f el)) nil)]
+    (let [next-ref (:ref attrs)]
+      (when-not (identical? next-ref @owner-ref)
+        (when-let [f @owner-ref] (f nil))
+        (reset! owner-ref next-ref)
+        (when (and next-ref @node) (next-ref @node)))
+      [:div (assoc attrs :ref ref-fn) content])
+    (finally (when @node (.removeEventListener @node "wheel" handler)))))
+
 (defn cube-layer [context window options scene layer at-z stacked?]
   (let [{:keys [doc current origin axes runtime bounds anchor]} context
         [x y z] axes [xs ys _] (:ranges window) [nx _ nz] (:shape window)]
     [:section {:class (if stacked? "cube-layer" "cube-slice")
                :aria-label (str "D" z " slice " at-z)
-               :style (merge {:width (:width scene) :opacity (- 1 (/ (:transparency options) 100))}
+               :style (merge {:width (:width scene) :opacity (if stacked? (- 1 (/ (:transparency options) 100)) 1)}
                              (if stacked?
                                {:height (:height scene)
                                 :transform (str "translateZ(" (* (- layer (/ (dec nz) 2)) (:gap options)) "px)")}
@@ -280,10 +299,10 @@
            [:label.axis-select [:span label]
             [:select {:value (nth cube-axes i) :aria-label (str "3D " label " dimension")
                       :on-change #(s/set-cube-axis! i (js/Number (.. % -target -value)))}
-             (for [d (range 1 (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (str "D" d)])]]
+             (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (if (zero? d) "∅ null" (str "D" d))])]]
            [:label.cube-size "size"
             [:input {:type "number" :min 1 :max preview/max-axis-size :step 1 :value (nth (:size options) i)
-                     :aria-label (str "3D " label " size")
+                     :aria-label (str "3D " label " size") :disabled (zero? (nth cube-axes i))
                      :on-change #(s/set-cube-size! i (js/Number (.. % -target -value)))}]]])
         [:button.button.compact {:on-click s/fit-cube! :disabled (nil? (:bounds context))} "Fit active bounds"]
         [:label.cube-check
@@ -302,7 +321,7 @@
        [:div.cube-camera-controls
         [cube-slider "Tilt" :tilt 15 80] [cube-slider "Rotation" :rotation -180 180]
         [cube-slider "Zoom" :zoom 25 200] [cube-slider "Layer gap" :gap 16 160]
-        [cube-slider "Transparency" :transparency 0 100]
+        (when stacked? [cube-slider "Transparency" :transparency 0 100])
         [:button.button.compact {:on-click #(swap! s/app assoc :cube-options
                                                   (merge (s/cube-options) (select-keys preview/default-options [:tilt :rotation :zoom :gap :transparency])))} "Reset camera"]
         [:button.button.compact {:on-click #(s/move-depth! -1) :aria-label "Previous Z slice"} "Z −"]
@@ -310,7 +329,7 @@
         [:button.button.compact {:on-click s/toggle-3d!} "Open in plane"]
         [:span.cube-count (str (:total window) " cells")]]
        (if stacked?
-         [:div.cube-stage {:ref ref-fn :tab-index 0 :aria-label "3D volume: drag to tilt and rotate"
+         [wheel-region {:class "cube-stage" :ref ref-fn :tab-index 0 :aria-label "3D volume: drag to tilt and rotate"
                            :on-pointer-down pointer-down :on-pointer-move pointer-move
                            :on-pointer-up finish-drag :on-pointer-cancel finish-drag :on-lost-pointer-capture finish-drag}
           [:div.cube-stack {:style {:width (:width scene) :height (:height scene)
@@ -318,7 +337,7 @@
                                                    (:tilt options) "deg) rotateZ(" (:rotation options) "deg)")}}
            (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
              ^{:key at-z} [cube-layer context window options scene layer at-z true])]]
-         [:div.cube-slices
+         [wheel-region {:class "cube-slices"}
           (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
             ^{:key at-z} [cube-layer context window options scene layer at-z false])])
        [:p.cube-caption
@@ -327,7 +346,7 @@
                                                     ["X" "Y" "Z"] cube-axes (:start window) (:end window))))]
         (when (:clipped? window) [:span.preview-limit " · Bounded preview, not the entire active volume."])
         [:br] (if stacked? "Drag anywhere to tilt/rotate. " "Click to select, double-click to edit. ")
-        "Arrows/PgUp/PgDn navigate; Enter/f edit; v selects a block. Hover for value/source."]])
+        "Scroll zooms; Ctrl+scroll adjusts gap; Shift+scroll adjusts stack transparency. Enter/I edit; f follows, F fits, l labels."]])
     (finally (when @observer (.disconnect @observer))
              (when @frame (js/cancelAnimationFrame @frame)))))
 
@@ -346,10 +365,10 @@
          [:label.axis-select [:span label]
           [:select {:value (nth hyper-axes i) :aria-label (str "4D " label " dimension")
                     :on-change #(s/set-hyper-axis! i (js/Number (.. % -target -value)))}
-           (for [d (range 1 (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (str "D" d)])]]
+           (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (if (zero? d) "∅ null" (str "D" d))])]]
          [:label.cube-size "size"
           [:input {:type "number" :min 1 :max preview/max-axis-size :value (nth (:size options) i)
-                   :aria-label (str "4D " label " size")
+                   :aria-label (str "4D " label " size") :disabled (zero? (nth hyper-axes i))
                    :on-change #(s/set-hyper-size! i (js/Number (.. % -target -value)))}]]])
       [:button.button.compact {:on-click s/fit-hyper! :disabled (nil? (:bounds context))} "Fit active bounds"]
       [:label.cube-check [:input {:type "checkbox" :checked (not hyper-fit) :aria-label "4D follow current cell"
@@ -357,7 +376,7 @@
       [:label.cube-check [:input {:type "checkbox" :checked (:labels options) :aria-label "4D show labels"
                                   :on-change #(s/set-hyper-option! :labels (.. % -target -checked))}] "Labels"]]
      [:div.cube-camera-controls
-      (for [[key label low high] [[:zoom "Zoom" 25 200] [:transparency "Transparency" 0 100]]]
+      (for [[key label low high] [[:zoom "Zoom" 25 200]]]
         ^{:key key}
         [:label.tilt-control label
          [:input {:type "range" :min low :max high :value (get options key) :aria-label (str "4D " (str/lower-case label))
@@ -368,7 +387,7 @@
       [:button.button.compact {:on-click #(s/move-slot! 4 1 false)} "W +"]
       [:button.button.compact {:on-click #(s/set-view! :plane)} "Open in plane"]
       [:span.cube-count (str (:total window) " cells")]]
-     [:div.hyper-stage
+     [wheel-region {:class "hyper-stage"}
       [:div.hyper-matrix {:style {:grid-template-columns (str "max-content repeat(" (count ws) ", max-content)")}}
        [:div.hyper-corner "Z / W"]
        (for [at-w ws] ^{:key (str "w" at-w)} [:div.hyper-column-label (str "D" w " = " at-w)])
@@ -383,7 +402,7 @@
      [:p.cube-caption
       [:span.cube-ranges (str (str/join " × " (:shape window)) " · W D" w " horizontally · Z D" z " vertically")]
       (when (:clipped? window) [:span.preview-limit " · Bounded preview, not the entire active hypercube."])
-      [:br] "Each panel shows X/Y. PgUp/PgDn or Ctrl+↑↓ move Z; Ctrl+←→ moves W. Shift extends selection; Enter/f edit."]]))
+      [:br] "Each panel shows X/Y. PgUp/PgDn or Ctrl+↑↓ move Z; Ctrl+←→ moves W. Shift extends selection; Enter/I edit. Scroll zooms; f follows, F fits, l labels."]]))
 
 (defn cell-bar []
   (let [{:keys [doc view anchor]} @s/app c (s/coord) cell (e/cell-at doc c)
@@ -393,7 +412,7 @@
      [:span.cell-kind (if cell (:kind cell) "empty")]
      [:button.cell-source {:on-click #(s/open-editor! nil)
                            :title "Edit cell (Enter)" :aria-label "Edit current cell"}
-      (if cell (:source cell) [:span.placeholder "Press Enter to set a value, or f for a formula…"])]
+      (if cell (:source cell) [:span.placeholder "Press Enter for a value, or Shift+Enter / I for a formula…"])]
      (when (:error result) [:span.cell-bar-error {:title (:error result)} "Evaluation error"])
      (when anchor
        [:span.selection-count {:title (str "Selection corners: " (e/coord-key anchor) " → " (e/coord-key c))}
@@ -409,9 +428,9 @@
      [:div.toolbar-right
       [:div.segmented
        [:button {:class (when (= view :plane) "active") :on-click #(s/set-view! :plane)} [icon :grid 15] "Plane"]
-       [:button {:class (when (= view :cube) "active") :disabled (< (:dimensions doc) 3)
+       [:button {:class (when (= view :cube) "active") :disabled (< (:dimensions doc) 2)
                  :on-click #(s/set-view! :cube)} [icon :cube 15] "3D"]
-       [:button {:class (when (= view :hypercube) "active") :disabled (< (:dimensions doc) 4)
+       [:button {:class (when (= view :hypercube) "active") :disabled (< (:dimensions doc) 3)
                  :on-click #(s/set-view! :hypercube)} [icon :grid 15] "4D"]]
       [tool-button "Edit" :edit #(s/open-editor! nil) {:class "button compact"}]]]))
 
@@ -490,13 +509,14 @@
 
 (defn inspector []
   (let [panel (:panel @s/app)]
-    [:aside.inspector.sheet-scope {:aria-label "Table inspector"}
+    [:aside {:class (str "inspector sheet-scope" (when-not panel " collapsed")) :aria-label "Table inspector"}
      [:div.inspector-tabs
       (for [[tab label] [[:named "Named cells"] [:rules "Rules"] [:css "CSS"]]]
         ^{:key tab} [:button {:class (when (= panel tab) "active") :aria-pressed (= panel tab)
-                             :on-click #(swap! s/app assoc :panel tab)} label
-                     (when (= tab :named) [:span.tab-count (count (get-in @s/app [:doc :named]))])])]
-     [:div.inspector-content (case panel :named [named-panel] :rules [rules-panel] :css [css-panel])]]))
+                             :aria-label label :title (str label " (" (case tab :named "n" :rules "r" "c") ")")
+                             :on-click #(s/toggle-panel! tab)} (if panel label (case tab :named "N" :rules "R" "C"))
+                     (when (and panel (= tab :named)) [:span.tab-count (count (get-in @s/app [:doc :named]))])])]
+     (when panel [:div.inspector-content (case panel :named [named-panel] :rules [rules-panel] :css [css-panel])])]))
 
 (defn statusbar []
   (let [{:keys [mode view doc command]} @s/app bounds (e/active-bounds doc)]
@@ -531,7 +551,8 @@
        [icon :plus 18] "New table"]]
      [:div.library-examples [:span "Examples"]
       [:button.button.compact {:on-click #(s/open-document! (demo/demo-document))} "Open the 5D example"]
-      [:button.button.compact {:on-click s/open-color-example!} "Open OKLCH color cube"]]
+      (for [{:keys [title description make]} examples/examples]
+        ^{:key title} [:button.button.compact {:title description :on-click #(s/open-example! make)} (str "Open " title)])]
      (if (empty? docs)
        [:div.library-empty [:p "No tables."]]
        [:div.document-grid
@@ -666,7 +687,7 @@
 
 (defn app-view []
   (let [{:keys [route theme help doc editor dialog toast error]} @s/app]
-    [:div.app {:data-theme theme}
+    [:div.app {:data-theme (s/resolved-theme) :data-theme-choice theme}
      [topbar]
      (when error [:div.storage-error {:role "alert"} error [:button {:on-click #(swap! s/app assoc :error nil) :aria-label "Dismiss error"} "×"]])
      [:div.app-main {:inert (boolean (or editor (:rule-editor @s/app) dialog))}

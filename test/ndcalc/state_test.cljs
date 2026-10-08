@@ -171,7 +171,7 @@
   (is (= 512 (:total (s/cube-window))))
   (is (:cube-fit @s/app))
   (s/move-depth! 1)
-  (is (= [0 0 4] (s/coord)))
+  (is (= [0 0 4 0] (s/coord)))
   (is (= [0 0 0] (:start (s/cube-window))))
   (s/set-cube-size! 0 4)
   (is (false? (:cube-fit @s/app)))
@@ -323,7 +323,7 @@
   (s/toggle-3d!) (s/toggle-visual!) (s/move-depth! 1)
   (let [c (s/coord) anchor (:anchor @s/app)]
     (doseq [[dimension expected] [[3 [1 2 3]] [1 [2 3 1]] [1 [2 3 1]] [2 [3 1 2]]
-                                [4 [1 2 4]] [0 [1 2 4]] [5 [2 4 5]] [4 [2 5 4]]]]
+                                [4 [1 2 4]] [0 [2 4 0]] [5 [4 0 5]] [4 [0 5 4]]]]
       (s/switch! dimension)
       (is (= expected (:cube-axes @s/app)))
       (is (= (vec (take 2 expected)) (s/mapping)))
@@ -340,4 +340,9 @@
   (is (= :cube (:view @s/app)))
   (is (= [1 2 3] (:cube-axes @s/app)))
   (s/change! #(e/resize-dimensions % 2))
+  (is (= :cube (:view @s/app)))
+  (is (= [1 2 0] (s/view-axes)))
+  (is (= (:cells (:doc @s/app)) (:cells (e/json->document (e/document->json (:doc @s/app))))))
+  (is (= 1 (last (:shape (s/cube-window)))))
+  (s/change! #(e/resize-dimensions % 1))
   (is (= :plane (:view @s/app))))

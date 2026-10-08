@@ -109,6 +109,10 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .inspector-tabs>button.active {color:var(--accent);}
 .inspector-tabs>button.active:after {content:''; height:2px; background:var(--accent); position:absolute; bottom:-1px; left:6px; right:6px;}
 .tab-count {font-size:12px; border-radius:4px; background:var(--raised); color:var(--muted); padding:1px 4px; margin-left:4px;}
+.inspector.collapsed {width:42px;}
+.inspector.collapsed .inspector-tabs {height:auto; padding:3px; flex-direction:column; gap:2px; border-bottom:0;}
+.inspector.collapsed .inspector-tabs>button {height:32px; padding:0;}
+.theme-select {height:28px; padding:2px 5px; font-size:13px; border:1px solid var(--line); border-radius:4px; color:var(--muted); background:var(--surface);}
 .inspector-content {flex:1; min-height:0; overflow:auto; padding:10px; scrollbar-width:thin;}
 .panel-heading {display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:6px;}
 .panel-heading h2 {font-size:16px; font-weight:600;}

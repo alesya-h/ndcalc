@@ -101,13 +101,21 @@
                        (formula "x => {for(let i=1;i<20002;i++) $(i); return 0}"))]
     (is (re-find #"Evaluation budget" (:error (result doc [0]))))))
 
+(deftest axis-recency-imports-are-validated
+  (let [doc (assoc-in (demo/blank-document "history" 4) [:view :axis-order] [3 0 1 4 2])]
+    (is (= [3 0 1 4 2] (get-in (e/json->document (e/document->json doc)) [:view :axis-order])))
+    (is (= [0 1 2] (get-in (e/resize-dimensions doc 2) [:view :axis-order])))
+    (doseq [bad [[1 1] [-1] [5] [1.5] ["1"] {:axis 1}]]
+      (is (thrown? js/Error (e/json->document (e/document->json (assoc-in doc [:view :axis-order] bad))))))))
+
 (deftest color-cube-example
   (let [doc (demo/color-document) runtime (e/make-runtime doc)
         result ((:evaluate runtime) [5 4 3])]
-    (is (= 3 (:dimensions doc)))
-    (is (= 512 (count (:cells doc))))
-    (is (= {:start [0 0 0] :end [7 7 7]} (e/active-bounds doc)))
-    (is (= [5 4 3] (js->clj (:value result))))
+    (is (= 4 (:dimensions doc)))
+    (is (= 1024 (count (:cells doc))))
+    (is (= {:start [0 0 0 0] :end [7 7 7 1]} (e/active-bounds doc)))
+    (is (= [5 4 3 0] (js->clj (:value result))))
+    (is (re-find #"lch\(62.5% 75 135\)" (:style ((:format runtime) [5 4 3 1] ((:evaluate runtime) [5 4 3 1])))))
     (is (re-find #"oklch\(62.5% 0.2 135\)" (:style ((:format runtime) [5 4 3] result))))
     (is (empty? (:style ((:format runtime) [8 4 3] {:value #js [8 4 3]}))))
     (is (= (:cells doc) (:cells (e/json->document (e/document->json doc)))))))

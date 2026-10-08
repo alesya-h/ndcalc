@@ -39,8 +39,16 @@
     (is (= [4 6 8] (mapv count (:ranges window))))
     (is (= 192 (:total window)))
     (is (false? (:clipped? window)))
-    (doseq [axes [[1 1 2] [0 1 2] [1 2 6] [1 2]]]
+    (doseq [axes [[1 1 2] [0 0 2] [-1 1 2] [1 2 6] [1 2]]]
       (is (thrown? js/Error (p/window doc axes [4 6 8] false))))))
+
+(deftest null-axes-stay-one-cell-deep
+  (let [doc (assoc-in (demo/blank-document "null" 4) [:view :coord] [99 -5 12 7])]
+    (doseq [[axes shape] [[[0 2 3] [32 32 32]] [[1 2 3 0] [8 8 8 32]]]]
+      (let [window (p/window doc axes shape false) slot (.indexOf (clj->js axes) 0)]
+        (is (= [0] (get (:ranges window) slot)))
+        (is (= 1 (get (:shape window) slot)))
+        (is (<= (:total window) p/max-cells))))))
 
 (deftest fitting-keeps-exact-bounds-or-explicitly-reports-clipping
   (let [doc (-> (demo/blank-document "bounds" 5)

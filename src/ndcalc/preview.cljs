@@ -71,18 +71,20 @@
         (recur (update shape axis dec))))))
 
 (defn bounds-shape [bounds axes]
-  (mapv #(inc (- (e/axis-value (:end bounds) %) (e/axis-value (:start bounds) %))) axes))
+  (mapv #(if (zero? %) 1 (inc (- (e/axis-value (:end bounds) %) (e/axis-value (:start bounds) %)))) axes))
 
 (defn window [doc axes shape fit?]
-  (validate-shape! shape)
   (when-not (and (= (count shape) (count axes) (count (set axes)))
-                 (every? #(and (e/safe-integer? %) (<= 1 % (:dimensions doc))) axes))
-    (e/fail "Preview axes must be distinct numeric dimensions."))
-  (let [bounds (e/active-bounds doc) c (get-in doc [:view :coord])
+                 (every? #(and (e/safe-integer? %) (<= 0 % (:dimensions doc))) axes))
+    (e/fail "Preview axes must be distinct dimensions (including null)."))
+  (let [shape (mapv #(if (zero? %1) 1 %2) axes shape)
+        _ (validate-shape! shape)
+        bounds (e/active-bounds doc) c (get-in doc [:view :coord])
         fit? (and fit? bounds)
         starts (mapv (fn [axis size]
-                       (let [start (if fit? (e/axis-value (:start bounds) axis)
-                                     (- (e/axis-value c axis) (js/Math.floor (/ (dec size) 2))))]
+                       (let [start (cond (zero? axis) 0
+                                         fit? (e/axis-value (:start bounds) axis)
+                                         :else (- (e/axis-value c axis) (js/Math.floor (/ (dec size) 2))))]
                          (max (- js/Number.MAX_SAFE_INTEGER)
                               (min (- js/Number.MAX_SAFE_INTEGER (dec size)) start)))) axes shape)]
     {:shape shape :total (reduce * shape) :start starts

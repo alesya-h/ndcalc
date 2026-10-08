@@ -193,7 +193,9 @@
   (assoc doc :dimensions n
          :cells (into {} (map (fn [[key cell]] [(coord-key (normalize-coord n (key-coord key))) cell]) (:cells doc)))
          :view {:coord (normalize-coord n (take n (get-in doc [:view :coord])))
-                :mapping (initial-mapping n)}))
+                :mapping (initial-mapping n)
+                :axis-order (vec (filter #(<= % n) (get-in doc [:view :axis-order])))
+                :expelled (vec (filter #(<= % n) (get-in doc [:view :expelled])))}))
 
 (defn document->json [doc]
   ;; Null-prototype dictionaries preserve legal names such as "__proto__".
@@ -241,7 +243,8 @@
           view (:view doc)
           coord (normalize-coord n (or (:coord view) []))
           mapping (or (:mapping view) (initial-mapping n))
-          expelled (or (:expelled view) [])]
+          expelled (or (:expelled view) [])
+          axis-order (or (:axis-order view) [])]
       (when (or (named? coord) (not= 2 (count mapping))
                 (not (every? #(and (safe-integer? %) (<= 0 % n)) mapping))
                 (and (pos? (first mapping)) (= (first mapping) (second mapping))))
@@ -249,7 +252,10 @@
       (when-not (and (vector? expelled) (= (count expelled) (count (set expelled)))
                       (every? #(and (safe-integer? %) (<= 1 % n)) expelled))
         (fail "Invalid expelled dimensions."))
+      (when-not (and (vector? axis-order) (= (count axis-order) (count (set axis-order)))
+                    (every? #(and (safe-integer? %) (<= 0 % n)) axis-order))
+        (fail "Invalid axis recency order."))
       {:id (str (random-uuid)) :title (:title doc) :dimensions n
        :cells normalized :named names :rules rules :css (:css doc)
        :createdAt (.now js/Date) :updatedAt (.now js/Date)
-       :view {:coord coord :mapping mapping :expelled expelled}})))
+       :view {:coord coord :mapping mapping :expelled expelled :axis-order axis-order}})))

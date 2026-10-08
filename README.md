@@ -1,6 +1,6 @@
 # ndcalc
 
-An **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. Data is stored in IndexedDB. An empty database opens a 5D example. Home always offers fresh copies of the 5D example and an 8×8×8 OKLCH coordinate-color cube. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
+An **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. Data is stored in IndexedDB. An empty database opens a 5D example. Home offers fresh copies of the 5D sample, a 4D OKLCH/LCH comparison, and hypertables from physics, math, business, engineering, accounting, and generative art. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
 
 ## Run
 
@@ -98,23 +98,40 @@ The **3D view** is editable and configurable:
 
 - On first entry, it fits populated bounds along the chosen X/Y/Z axes; an empty table starts with an 8×8×8 window. **Fit active bounds** recalculates extents. Large bounds are explicitly marked as a bounded preview, never presented as the entire volume.
 - Set each axis size independently, **1–32**, with a **4,096-cell total limit**. Manually changing a size enables **Follow cell**, which centers the window on the current coordinate. Uncheck it to fit bounds again.
-- **Stack** automatically fits the projected volume to the available space. **Drag anywhere in the volume, including over cells, to tilt/rotate**; horizontal movement rotates and vertical movement tilts. Dragging never changes the selected cell. The sliders also adjust tilt, rotation, zoom, and layer gap. **Transparency** runs from 0% (opaque) to 100% (invisible) and applies to each layer. **Reset camera** restores camera defaults, including transparency.
+- **Stack** automatically fits the projected volume to the available space. **Drag anywhere in the volume, including over cells, to tilt/rotate**; horizontal movement rotates and vertical movement tilts. Dragging never changes the selected cell. The sliders also adjust tilt, rotation, zoom, and layer gap. **Transparency** runs from 0% (opaque) to 100% (invisible) and applies **only to the 3D Stack**. Slices and 4D panels stay opaque. **Reset camera** restores camera defaults, including transparency.
 - **Slices** displays individually readable, scrollable grids without overlapping planes. Click to select or double-click to edit without leaving 3D. **Labels** toggles values/coordinates; without labels, formatting fills each cell for a clearer color-volume view.
-- Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. **Enter/i/f**, the Edit button, and the source bar open the cell editor directly in 3D. Visual selection/fill, clear, copy/paste, undo/redo, named cells, formatting rules, and CSS all work without switching to the plane. **Open in plane** is optional. Hover for the full value and source.
+- Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. **Enter/i** (regular edit) or **Shift+Enter/I** (Formula), the Edit button, and the source bar open the cell editor directly in 3D. Visual selection/fill, clear, copy/paste, undo/redo, named cells, formatting rules, and CSS all work without switching to the plane. **Open in plane** is optional. Hover for the full value and source.
 
-3D maintains a distinct, non-null **X/Y/Z dimension queue**. Pressing a dimension key or chip removes that dimension from its existing position and appends it to the end; a new dimension drops the oldest. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is ignored in 3D**, so dimension hotkeys never collapse it to a lower-dimensional view. Axis dropdowns explicitly assign an axis, swapping with an existing axis if necessary. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed.
+3D maintains a distinct **X/Y/Z dimension queue**. Pressing a dimension key or chip removes that dimension from its existing position and appends it to the end; a new dimension drops the oldest. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is allowed in every view**: the null axis stays at coordinate zero, one cell deep, with its size control disabled. It cannot be stepped along. Selecting it does not change view mode. Axis dropdowns explicitly assign an axis, swapping with an existing axis if necessary. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed.
 
-Entering a higher-dimensional view fills any null axes with available numeric dimensions. Explicitly resizing the document below the view's rank returns to the plane; this is separate from dimension navigation. Computed values, selection highlighting, and active-hypercube formatting are shared by all views. `Ctrl+t` switches 3D between Stack and Slices.
+`t` cycles **Plane → 3D → 4D → Plane**, skipping views without enough distinct available dimensions (including null). 3D therefore needs at least two numeric dimensions and 4D at least three. Existing null axes are preserved. Resizing below the minimum returns to the plane. Computed values, selection highlighting, and active-hypercube formatting are shared by all views. Use Stack/Slices buttons for the 3D layout. **Ctrl+t and Ctrl+Shift+t are not intercepted**, leaving browser tab shortcuts intact.
 
-Home → **Open OKLCH color cube** creates 512 coordinate formulas, `(a,b,c) => [a,b,c]`, over `[0,0,0]` through `[7,7,7]`. A formatting rule maps the value to OKLCH lightness, chroma, and hue. Change D3 in the plane to explore hues, or enter 3D to compare all eight layers. Opening an example creates a new saved document without modifying your existing tables.
+Scroll over the 3D/4D canvas to zoom; in 3D, Ctrl+scroll adjusts layer gap and Shift+scroll adjusts stack transparency. Native non-passive wheel handlers prevent browser zoom over the preview; scrolling elsewhere behaves normally. `f` toggles Follow cell, `F` fits active bounds, and `l` toggles Labels in either volume view.
 
-The **4D view** (4D button or `Ctrl+Shift+t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, zoom, transparency, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys use a four-element queue; `0` remains ignored.
+Home → **Open OKLCH vs LCH** creates 1,024 coordinate formulas over an 8×8×8×2 table. D1/D2/D3 select lightness/chroma/hue; **D4 chooses OKLCH or CIELCH (D50)**. In 4D the spaces appear side by side, with hue slices vertically. Chroma uses each space's own scale (OKLCH 0–0.35, LCH 0–131.25), not equal colorimetric values; out-of-sRGB colors are browser gamut-mapped.
 
-Higher-axis navigation uses **logical navigation slots**, not hardcoded dimension numbers. The visible X/Y/Z/W axes come first, followed by the **most recently expelled** hidden axes, then other dimensions in ascending order. In the plane, PgUp/PgDn therefore moves the last expelled axis (or D3 before any expulsion). `Ctrl+Up/Down` does the same; `Ctrl+Left/Right` moves slot 4, Alt moves slots 5/6, and Ctrl+Alt slots 7/8. Up/PageUp/Right increments; Down/PageDown/Left decrements. Shift starts or extends an n-dimensional selection with every movement. Hidden chips show `nav3`…`nav8` to identify these bindings. Missing slots report a message without moving.
+The **4D view** (4D button or the second `t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, wheel zoom, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys use a four-element queue, including `0` as a one-cell null axis.
+
+Higher-axis navigation uses **logical navigation slots**, not hardcoded dimension numbers. The visible X/Y/Z/W axes come first, followed by hidden dimensions in a **global recency order**. Newly expelled dimensions move to the front of that history. Active dimensions retain their place in the history, and switching Plane/3D/4D does not rewrite it: hidden ordering is independent of view. Previously unused dimensions start in numeric order, with null last. In the plane, PgUp/PgDn therefore moves the last expelled axis (or D3 before any expulsion). `Ctrl+Up/Down` does the same; `Ctrl+Left/Right` moves slot 4, Alt moves slots 5/6, and Ctrl+Alt slots 7/8. Up/PageUp/Right increments; Down/PageDown/Left decrements. Shift starts or extends an n-dimensional selection with every movement. Hidden chips show `nav3`…`nav8` to identify these bindings. Missing slots report a message without moving.
 
 `Home`/`End` in the plane go to the first/last **populated cell in the current row**, respecting mapped axes and every fixed coordinate. Other rows and slices do not affect the endpoints; an empty row does not move. Shift+Home/End extends selection. These keys do not change coordinates in 3D or 4D.
 
 Changing the dimension count is supported. Removing a dimension is refused if any populated cell has a non-zero coordinate there; data is never silently discarded.
+
+## Example hypertables
+
+Opening an example creates a **fresh saved copy**, leaving existing tables untouched. The Named cells panel supplies axis legends, units, assumptions, and editable inputs. All data is synthetic and models are deliberately simplified.
+
+| Example | Shape / subject | Formatting |
+|---|---|---|
+| Heat diffusion | 8×8×4×3 · X/Y, time, diffusivity; analytical Gaussian solution | Thermal color map with gentle CSS breathing |
+| Membrane eigenmodes | 8×8×3×3 · X/Y and two mode numbers | Diverging signed amplitudes and nodal-line outlines |
+| Product scenario planning | 12×3×3×3×4 · month, product, region, demand scenario, metric | Magnitude bars, profit sign, margin meters |
+| Beam design envelope | 6×5×4×3×4 · span, load, section, material, metric | Utilization colors, animated overload hatching |
+| Double-entry ledger | 6×6×3×2 · month, account, department, actual/budget | Debit/credit colors; live balance controls pulse on imbalance |
+| Interference atelier | 12×12×4×3 · X/Y, phase, motif | Object-valued cells, conic gradients, animated hue and shape morphing |
+
+Business profit/margin and ledger controls reference other cells, so manual edits propagate. Beam results cover deflection, stress, and stress/serviceability utilization; they are screening examples, not design certification. Animations are entirely local CSS and respect `prefers-reduced-motion`.
 
 ## Modal keyboard editing
 
@@ -137,7 +154,11 @@ Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no h
 | `b` / `B` | First active X / Y coordinate |
 | `e` / `E` | Last active X / Y coordinate |
 | Enter / `i` | Edit current cell or fill selection |
-| `f` | Open editor with Formula selected |
+| Shift+Enter / `I` | Edit as a formula |
+| `f` / `F` | Toggle Follow cell / fit active bounds (3D/4D) |
+| `l` | Toggle Labels (3D/4D) |
+| Scroll | Zoom (3D/4D) |
+| Ctrl+Scroll / Shift+Scroll | Layer gap / stack transparency (3D) |
 | `v` / Ctrl+V | Toggle n-dimensional visual selection |
 | Shift+arrows / Shift+click | Extend selection |
 | `y` / `p` | Copy / paste cells and their source |
@@ -152,9 +173,9 @@ Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no h
 | `c` | CSS panel |
 | `r` | Formatting rules panel |
 | `h` | Toggle help |
-| `t` | Toggle plane / 3D |
-| Ctrl+T | Toggle 3D Stack / Slices |
-| Ctrl+Shift+T | Toggle plane / 4D |
+| `t` | Cycle plane → 3D → 4D → plane |
+
+Panel shortcuts (`n`, `c`, `r`) or clicking an inspector tab **hide an already active panel**. A narrow tab rail remains for mouse reopening. Browser Ctrl+t / Ctrl+Shift+t keep their native behavior.
 
 Axis operations use lowercase for **X**, uppercase for **Y**. Visual selection keeps an n-dimensional anchor and selects the inclusive box between it and the current cell, across **all** dimensions. Switching planes, using the axis dropdowns, changing fixed slice coordinates, or jumping with `g`/`G` preserves the selection. The plane highlights its intersection with that box; the selected-cell count includes hidden slices. Enter/fill, Delete, and `y` operate on the entire box, not just the visible plane. Escape or `v` cancels selection; filling, clearing, or copying finishes it.
 
@@ -186,7 +207,7 @@ At render time the coordinate predicate runs first. Only a match invokes the val
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and expelled-axis history—automatically saves to **IndexedDB**. Theme and 3D/4D size/layout/labels/camera preferences, including transparency and mouse-adjusted angles, are also stored there. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and global axis-recency history—automatically saves to **IndexedDB**. Theme choice (**System**, Light, Dark) and 3D/4D size/layout/labels/camera preferences, including stack transparency and mouse-adjusted angles, are also stored there. **System is the default**, tracks `prefers-color-scheme` live, and follows OS changes only while selected. Light/Dark overrides stay fixed. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 
@@ -205,7 +226,8 @@ The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, 
 - `src/ndcalc/storage.cljs` — IndexedDB transactions and preferences.
 - `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview and 4D slice matrix.
 - `src/ndcalc/app.cljs` — React 19 root and startup.
-- `src/ndcalc/demo.cljs` — working 5D sample and 8×8×8 OKLCH color cube.
+- `src/ndcalc/demo.cljs` — blank, 5D and OKLCH/LCH document factories.
+- `src/ndcalc/examples.cljs` — domain-specific hypertables and animated formatting.
 - `src/ndcalc/preview.cljs` — bounded 3D/4D windows, axis permutations, active-bound fitting, camera geometry and validated preferences.
 - `test/ndcalc/` — ClojureScript unit tests.
 - `scripts/browser-test.mjs` — isolated Playwright end-to-end workflows.

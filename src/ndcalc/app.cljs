@@ -9,6 +9,7 @@
   (dom/render @root [ui/app-view]))
 
 (defn init []
+  (state/install-system-theme!)
   (mount!)
   (.addEventListener js/document "keydown" state/keydown!)
   (state/init!))

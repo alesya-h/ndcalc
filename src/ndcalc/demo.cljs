@@ -11,14 +11,17 @@
    :view {:coord (vec (repeat dimensions 0)) :mapping (e/initial-mapping dimensions)}})
 
 (defn color-document []
-  (let [doc (blank-document "OKLCH color cube" 3)
-        doc (reduce (fn [d c] (e/put-cell d c {:kind "formula" :source "(a,b,c) => [a,b,c]"}))
-                    doc (for [c (range 8) b (range 8) a (range 8)] [a b c]))]
-    (assoc doc :view {:coord [0 0 3] :mapping [1 2]}
+  (let [doc (blank-document "OKLCH vs LCH" 4)
+        doc (reduce (fn [d c] (e/put-cell d c {:kind "formula" :source "(a,b,c,space) => [a,b,c,space]"}))
+                    doc (for [space (range 2) c (range 8) b (range 8) a (range 8)] [a b c space]))
+        doc (-> doc
+                (e/put-cell ["axes"] {:kind "value" :source "['Lightness (0–7)', 'Chroma (0–7)', 'Hue (0–7)', 'Color space: 0 OKLCH, 1 LCH']"})
+                (e/put-cell ["notes"] {:kind "value" :source "'D4 compares OKLCH and CIELCH (D50). Lightness 0–87.5%, hue 0–315°. Chroma uses each space’s own scale: 0–0.35 vs 0–131.25, not equivalent colorimetric values. Out-of-sRGB colors are browser gamut-mapped. In 4D the two spaces appear side by side.'"}))]
+    (assoc doc :view {:coord [0 0 3 0] :mapping [1 2]}
            :css ""
-           :rules [{:id (str (random-uuid)) :name "OKLCH coordinates" :enabled true
-                    :coord "(...coord) => true"
-                    :value "v => Array.isArray(v) ? `background-color: oklch(${v[0]*100/8}% ${v[1]*0.4/8} ${v[2]*360/8}); color: ${v[0] < 5 ? 'white' : '#17202b'};` : ''"}])))
+           :rules [{:id (str (random-uuid)) :name "OKLCH / CIELCH comparison" :enabled true
+                    :coord "(...coord) => typeof coord[0] === 'number'"
+                    :value "v => Array.isArray(v) ? `background-color: ${v[3] === 0 ? `oklch(${v[0]*100/8}% ${v[1]*0.4/8} ${v[2]*360/8})` : `lch(${v[0]*100/8}% ${v[1]*150/8} ${v[2]*360/8})`}; color: ${v[0] < 5 ? 'white' : '#17202b'};` : ''"}])))
 
 (defn demo-document []
   (let [doc (blank-document "5D example" 5)
