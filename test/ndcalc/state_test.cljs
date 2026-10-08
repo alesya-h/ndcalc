@@ -87,6 +87,37 @@
   (is (= :plane (:view @s/app)))
   (is (= [3 0] (s/mapping))))
 
+(deftest dimension-matched-formula-templates
+  (doseq [[n expected] [[0 "(...rest) => "] [1 "(a,...rest) => "]
+                        [2 "(a,b,...rest) => "] [3 "(a,b,c,...rest) => "]
+                        [5 "(a,b,c,d,e,...rest) => "]]]
+    (is (= expected (s/formula-template n false))))
+  (is (= "(name,...rest) => " (s/formula-template 5 true)))
+  (is (fn? (e/compile-expression (str (s/formula-template 32 false) "0") nil)))
+  (s/open-editor! "formula")
+  (is (= "(a,b,c,d,e,...rest) => " (get-in @s/app [:editor :source])))
+  (is (true? (get-in @s/app [:editor :focus-source])))
+  (swap! s/app assoc :editor nil)
+  (s/open-editor! nil)
+  (s/set-editor-kind! "formula")
+  (is (= "(a,b,c,d,e,...rest) => " (get-in @s/app [:editor :source])))
+  (swap! s/app assoc-in [:editor :source] "x => 42")
+  (s/set-editor-kind! "value")
+  (s/set-editor-kind! "formula")
+  (is (= "x => 42" (get-in @s/app [:editor :source])))
+  (s/new-named!)
+  (s/set-editor-kind! "formula")
+  (is (= "(name,...rest) => " (get-in @s/app [:editor :source]))))
+
+(deftest existing-sources-are-not-replaced-by-templates
+  (let [source "(a,b,...rest) => 42"]
+    (s/change! #(e/put-cell % [] {:kind "formula" :source source}))
+    (s/open-editor! nil)
+    (is (= source (get-in @s/app [:editor :source]))))
+  (s/change! #(e/put-cell % [] {:kind "value" :source "123"}))
+  (s/open-editor! "formula")
+  (is (= "123" (get-in @s/app [:editor :source]))))
+
 (deftest readonly-means-no-content-changes
   (s/change! #(e/put-cell % [] {:kind "value" :source "5"}))
   (swap! s/app assoc :view :cube)

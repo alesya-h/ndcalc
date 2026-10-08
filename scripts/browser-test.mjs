@@ -55,6 +55,41 @@ const waitText = async (c,expected) => {
 try {
   await page.goto(process.env.NDCALC_URL || 'http://localhost:8080');
   await page.getByRole('grid').waitFor();
+  await check('compact layout, larger text, and retained contextual guidance', async () => {
+    const layout = await page.evaluate(() => ({
+      gridTop: document.querySelector('.grid-container').getBoundingClientRect().top,
+      rowHeight: document.querySelector('.sheet td').getBoundingClientRect().height,
+      cellFont: parseFloat(getComputedStyle(document.querySelector('.cell-text')).fontSize),
+      buttonHeight: document.querySelector('.topbar .button').getBoundingClientRect().height
+    }));
+    assert.ok(layout.gridTop <= 165);
+    assert.ok(Math.abs(layout.rowHeight - 35) < 0.1);
+    assert.ok(layout.cellFont >= 15);
+    assert.ok(layout.buttonHeight <= 34);
+    await clickText('Rules');
+    assert.match(await page.locator('.panel-tip').innerText(), /Coordinate predicates receive spread coordinates/);
+    await page.getByRole('button',{name:/^Named cells/}).click();
+    const body = await page.locator('body').innerText();
+    for (const slogan of ['Think beyond the plane','A small language for a bigger canvas.','Every slice, one table.'])
+      assert.ok(!body.includes(slogan));
+  });
+  await check('new formulas are prefilled and the caret follows the arrow', async () => {
+    await go(8,8); await press('f');
+    const source = page.getByRole('textbox',{name:'Cell JavaScript source'});
+    assert.equal(await source.inputValue(), '(a,b,c,d,e,...rest) => ');
+    assert.equal(await source.evaluate(el => document.activeElement === el && el.selectionStart === el.value.length && el.selectionEnd === el.value.length), true);
+    await page.keyboard.type('a+b'); await press('Control+Enter');
+    await waitText([8,8,0,0,0], '16');
+    await press('u');
+    await press('Enter');
+    await page.getByRole('button',{name:/^ƒ Formula/}).click();
+    await page.waitForFunction(() => {
+      const el = document.querySelector('textarea[aria-label="Cell JavaScript source"]');
+      return document.activeElement === el && el.selectionStart === el.value.length;
+    });
+    assert.equal(await source.inputValue(), '(a,b,c,d,e,...rest) => ');
+    await press('Escape'); await go(0,0);
+  });
   await check('the exact requested dimension rotation sequence', async () => {
     for (const [key,expected] of [['3',[2,3]],['1',[3,1]],['1',[1,0]],['1',[0,1]],['2',[1,2]],['1',[2,1]],['2',[1,2]]]) {
       await press(key);

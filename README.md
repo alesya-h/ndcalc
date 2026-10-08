@@ -1,6 +1,6 @@
 # ndcalc
 
-A local-first, modal **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. No backend or account. A fresh database opens a working 5D example. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
+An **n-dimensional spreadsheet** built with **ClojureScript, Reagent 2, React 19, and shadow-cljs**. Data is stored in IndexedDB. An empty database opens a 5D example. Fonts are bundled locally (SIL Open Font License files are in `public/fonts/`); the application itself makes no external network requests.
 
 ## Run
 
@@ -58,6 +58,8 @@ In the modal editor, select **Value** or **Formula**. The type is never guessed 
 (a,b,...rest) => $(a-1,b,...rest) * $("multiplier")
 name => $("input") * 2
 ```
+
+New numeric formulas are prefilled with one named argument per table dimension (including fixed slice dimensions), followed by `...rest`: `(a,b,c,...rest) => ` for 3D. The cursor starts after the arrow. A 0D template is `(...rest) => `; named cells use `(name,...rest) => `. Existing source is preserved when editing or switching types.
 
 A function stored as **Value** is not called automatically. A formula can explicitly call it: `() => $("as_function")(21)`.
 

@@ -74,7 +74,6 @@
   [:aside.help-sidebar {:aria-label "Keyboard shortcuts"}
    [:div.sidebar-heading [:h2 "Keyboard shortcuts"]
     [:button.button.icon-button {:on-click #(swap! s/app assoc :help false) :aria-label "Close shortcuts"} [icon :close 16]]]
-   [:p.sidebar-intro "A small language for a bigger canvas."]
    (for [[heading keys] shortcuts]
      ^{:key heading}
      [:section.shortcut-section [:h3 heading]
@@ -119,8 +118,6 @@
         c (get-in doc [:view :coord]) [x y] (s/mapping)
         axes (if (= :cube view) cube-axes [x y])]
     [:div.dimension-bar
-     [:div.dimension-caption [:span.eyebrow "DIMENSIONS"]
-      [:span.subtle (if (zero? n) "One cell. Zero axes." "Every slice, one table.")]]
      [:div.dimension-chips
       (when (zero? n) [:div.dim-chip.active [:b "∅"] [:span "origin []"]])
       (for [d (range 1 (inc n))]
@@ -234,8 +231,7 @@
                       :data-coord (e/coord-key at)}
                 [format-content runtime at cell]
                 [:span.cube-coord (e/coord-key at)]]))]])]]
-     [:div.cube-caption [:span "Three dimensions. One neighborhood."]
-      [:p "A 3 × 3 × 3 window around the current cell. Arrow keys move the center; dimension coordinates choose the slice. Hover cells for values and source."]]]))
+     [:p.cube-caption "A 3 × 3 × 3 window around the current cell. Arrow keys move the center; dimension coordinates choose the slice. Hover cells for values and source."]]))
 
 (defn cell-bar []
   (let [{:keys [doc view anchor]} @s/app c (s/coord) cell (e/cell-at doc c)
@@ -269,10 +265,10 @@
 (defn named-panel []
   (let [{:keys [doc named-focus view]} @s/app runtime (s/runtime)]
     [:section.named-panel
-     [:div.panel-heading [:div [:h2 "Named cells"] [:p "References without coordinates."]]
+     [:div.panel-heading [:h2 "Named cells"]
       [:button.button.icon-button {:on-click s/new-named! :disabled (= view :cube) :title "New named cell (n)" :aria-label "New named cell"} [icon :plus]]]
      (if (empty? (:named doc))
-       [:div.panel-empty [icon :cube 30] [:p "Give a cell a name."] [:span "Use it anywhere with $(\"name\")."]]
+       [:div.panel-empty [:p "No named cells."] [:span "Use named cells with $(\"name\")."]]
        [:div.named-list
         (for [[name cell] (sort-by key (:named doc))]
           ^{:key name}
@@ -287,7 +283,7 @@
             [:button.button.icon-button.tiny {:on-click #(s/change! (fn [d] (e/put-cell d [name] nil)))
                                              :disabled (= view :cube) :aria-label (str "Delete named cell " name)} [icon :trash 14]]]
            [format-content runtime [name] cell]])])
-     [:div.panel-tip [:code "$(\"multiplier\")"] [:p "Named cells can contain values or formulas. A function can also be just a value."]]]))
+     [:div.panel-tip [:code "$(\"name\")"] [:p "Named cells can contain values or formulas. A function can also be just a value."]]]))
 
 (defn rules-panel []
   (let [{:keys [doc view]} @s/app editable (= view :plane)]
@@ -295,7 +291,7 @@
      [:div.panel-heading [:div [:h2 "Conditional formatting"] [:p "Ordered rules. Later styles win."]]
       [:button.button.icon-button {:on-click #(s/open-rule! nil) :disabled (not editable) :aria-label "Add formatting rule"} [icon :plus]]]
      [:div.rule-list
-      (when (empty? (:rules doc)) [:div.panel-empty [:p "Let the data set the style."] [:span "Add a rule, or use () => true for static formatting."]])
+      (when (empty? (:rules doc)) [:div.panel-empty [:p "No formatting rules."] [:span "Add a rule, or use () => true for static formatting."]])
       (for [[index rule] (map-indexed vector (:rules doc))]
         ^{:key (:id rule)}
         [:article.rule-card {:draggable editable
@@ -369,41 +365,29 @@
     [inspector]]
    [statusbar]])
 
-(defn document-preview [doc]
-  (let [n (:dimensions doc) occupied (set (map e/key-coord (keys (:cells doc))))]
-    [:div.document-preview {:aria-hidden true}
-     [:div.preview-grid
-      (for [y (range 4) x (range 6)]
-        ^{:key (str x ":" y)}
-        [:span {:class (when (contains? occupied (vec (take n (concat [x y] (repeat 0))))) "filled")}])]
-     [:span.preview-dimension (str n "D")]]))
-
 (defn home-page []
   (let [docs (:documents @s/app)]
     [:main.home-page
-     [:section.home-intro
-      [:div [:div.eyebrow "YOUR LOCAL WORKSPACE"]
-       [:h1 "Think beyond " [:span "the plane."]]
-       [:p "One cell or infinite directions. Values, functions, and a little perspective."]]
+     [:div.library-heading
+      [:h1 "Tables"] [:span (count docs)]
       [:button.button.primary.new-document {:on-click #(swap! s/app assoc :dialog {:type :create :title "Untitled table" :n 2})}
        [icon :plus 18] "New table"]]
-     [:div.library-heading [:h2 "Your tables"] [:span (str (count docs) " document" (when (not= 1 (count docs)) "s"))]]
      (if (empty? docs)
-       [:div.library-empty [icon :cube 52] [:h2 "A fresh coordinate system."] [:p "Create a table from 0 to 32 dimensions, or import a JSON document."]
+       [:div.library-empty [:p "No tables."]
         [:button.button {:on-click #(s/open-document! (demo/demo-document))} "Open the 5D example"]]
        [:div.document-grid
         (for [doc docs]
           ^{:key (:id doc)}
           [:article.document-card
            [:button.document-open {:on-click #(s/open-document! doc)}
-            [document-preview doc]
+            [:span.dimension-badge (str (:dimensions doc) "D")]
             [:div.document-info [:h3 (:title doc)]
              [:p (str (count (:cells doc)) " cells · " (count (:named doc)) " named")]]]
            [:div.document-card-footer
             [:span (str "Edited " (.toLocaleDateString (js/Date. (:updatedAt doc)) js/undefined #js {:month "short" :day "numeric"}))]
             [:button.button.icon-button.tiny {:on-click #(s/download! doc) :aria-label (str "Export " (:title doc))} [icon :download 15]]
             [:button.button.icon-button.tiny {:on-click #(swap! s/app assoc :dialog {:type :delete :document doc}) :aria-label (str "Delete " (:title doc))} [icon :trash 15]]]])])
-     [:div.local-first-note [:span.status-dot] "Stored in this browser with IndexedDB. No account. No server. Export a backup before clearing browser data."]]))
+     [:p.local-first-note "Stored in this browser. Export a backup before clearing browser data."]]))
 
 (defn modal-shell [title subtitle content actions close-fn]
   (r/with-let [previous-focus (.-activeElement js/document)]
@@ -427,7 +411,15 @@
     (finally (when (and previous-focus (.-isConnected previous-focus)) (.focus previous-focus)))))
 
 (defn cell-editor []
-  (let [{:keys [coords kind source error new-name name]} (:editor @s/app)]
+  (let [{:keys [coords kind source error new-name name focus-source]} (:editor @s/app)]
+    (when focus-source
+      (r/after-render
+        (fn []
+          (when (get-in @s/app [:editor :focus-source])
+            (when-let [el (.querySelector js/document "textarea[aria-label='Cell JavaScript source']")]
+              (.focus el)
+              (.setSelectionRange el (count (.-value el)) (count (.-value el)))
+              (swap! s/app assoc-in [:editor :focus-source] false))))))
     [modal-shell (if new-name "New named cell" (if (> (count coords) 1) (str "Fill " (count coords) " cells") "Edit cell"))
      (when-not new-name (str (e/coord-label (first coords)) (when (> (count coords) 1) (str " … " (e/coord-label (last coords))))))
      [:div.modal-content
@@ -437,12 +429,12 @@
        (for [[k label description] [["value" "Value" "Any JavaScript expression"] ["formula" "Formula" "A function that computes this cell"]]]
          ^{:key k}
          [:button {:class (when (= kind k) "active") :aria-pressed (= kind k)
-                   :on-click #(swap! s/app assoc-in [:editor :kind] k)}
+                   :on-click #(s/set-editor-kind! k)}
           [:span (if (= k "formula") "ƒ" "≡")] [:div [:b label] [:small description]]])]
       [:label.field (if (= kind "formula") "JAVASCRIPT FUNCTION" "JAVASCRIPT EXPRESSION")
        [:textarea.code-editor {:auto-focus (not new-name) :value source :spell-check false :rows 6
                                :aria-label "Cell JavaScript source"
-                               :placeholder (if (= kind "formula") "(a,b,...rest) => $(a,b+1,...rest) + 1" "42, \"hello\", { answer: 42 }, or x => x * 2")
+                               :placeholder (if (= kind "formula") (s/editor-template (:editor @s/app)) "42, \"hello\", { answer: 42 }, or x => x * 2")
                                :on-change #(swap! s/app assoc-in [:editor :source] (.. % -target -value))
                                :on-key-down #(when (and (or (.-ctrlKey %) (.-metaKey %)) (= "Enter" (.-key %))) (.preventDefault %) (s/save-editor!))}]]
       [:p.editor-note (if (= kind "formula") "Coordinates are passed as function arguments. Read numeric or named cells with $(…). Missing cells return undefined."
@@ -517,7 +509,7 @@
      [:div.app-main {:inert (boolean (or editor (:rule-editor @s/app) dialog))}
       (when help [help-sidebar])
       [:div.workspace
-       (case route :loading [:div.loading-state [icon :cube 42] [:p "Opening your coordinate system…"]]
+       (case route :loading [:div.loading-state [icon :cube 42] [:p "Loading…"]]
              :home [home-page] :editor [editor-workspace])]]
      (when doc [:style (str "@scope (.sheet-scope) {\n" (:css doc) "\n}")])
      (when editor [cell-editor])

@@ -11,7 +11,7 @@
    :view {:coord (vec (repeat dimensions 0)) :mapping (e/initial-mapping dimensions)}})
 
 (defn demo-document []
-  (let [doc (blank-document "Beyond the plane" 5)
+  (let [doc (blank-document "5D example" 5)
         headings ["Experiment" "Baseline" "Growth" "Projected" "Δ change"]
         data [["North" 120 0.12] ["South" 85 0.08] ["East" 160 0.18]
               ["West" 95 -0.04] ["Central" 140 0.15]]

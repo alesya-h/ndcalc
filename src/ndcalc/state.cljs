@@ -117,12 +117,32 @@
       (ensure-visible!)))))
 
 (defn editable? [] (= :plane (:view @app)))
+(defn formula-template [dimensions named?]
+  (let [args (if named? ["name"]
+              (mapv #(if (< % 26) (js/String.fromCharCode (+ 97 %)) (str "d" (inc %)))
+                    (range dimensions)))]
+    (str "(" (str/join "," (conj args "...rest")) ") => ")))
+
+(defn editor-template [editor]
+  (formula-template (get-in @app [:doc :dimensions])
+                    (or (:new-name editor) (some-> editor :coords first e/named?))))
+
+(defn set-editor-kind! [kind]
+  (swap! app update :editor
+         (fn [editor]
+           (cond-> (assoc editor :kind kind :error nil)
+             (and (= kind "formula") (str/blank? (:source editor)))
+             (assoc :source (editor-template editor) :focus-source true)))))
+
 (defn open-editor! [kind]
   (if-not (editable?) (notify! "3D is read-only. Switch to the plane to edit.")
     (guard!
-      #(let [coords (selected-coords) cell (e/cell-at (:doc @app) (first coords))]
-         (swap! app assoc :editor {:coords coords :kind (or kind (:kind cell) "value")
-                                  :source (or (:source cell) "") :error nil} :command nil)))))
+      #(let [coords (selected-coords) cell (e/cell-at (:doc @app) (first coords))
+             kind (or kind (:kind cell) "value")
+             editor {:coords coords :kind kind :source (or (:source cell) "") :error nil}
+             editor (if (and (= kind "formula") (str/blank? (:source editor)))
+                      (assoc editor :source (editor-template editor) :focus-source true) editor)]
+         (swap! app assoc :editor editor :command nil)))))
 
 (defn new-named! []
   (if-not (editable?) (notify! "Switch to the plane to create named cells.")
