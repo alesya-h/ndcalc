@@ -26,32 +26,31 @@
 (defn guard! [f] (try (f) (catch :default err (notify! (.-message err)))))
 
 (defn runtime []
-  (let [doc (:doc @app) key (select-keys doc [:dimensions :cells :named :rules])]
+  (let [doc (:doc @app) key (select-keys doc [:dimensions :aliases :hyperplanes :cells :named :rules])]
     (when-not (= key (:key @runtime-cache))
       (reset! runtime-cache {:key key :runtime (e/make-runtime doc)}))
     (:runtime @runtime-cache)))
 
 (defn coord [] (or (some-> (:named-focus @app) vector) (get-in @app [:doc :view :coord])))
-(defn mapping [] (get-in @app [:doc :view :mapping]))
+(defn axis-queue [] (e/full-axis-queue (:doc @app)))
 (defn volume? [] (boolean (#{:cube :hypercube} (:view @app))))
-(defn view-axes []
-  (case (:view @app) :cube (:cube-axes @app) :hypercube (:hyper-axes @app) (mapping)))
-(defn axis-order []
-  (let [n (get-in @app [:doc :dimensions])]
-    (vec (distinct (filter #(and (e/safe-integer? %) (<= 0 % n))
-                          (concat (get-in @app [:doc :view :axis-order])
-                                  (get-in @app [:doc :view :expelled]) (range 1 (inc n)) [0]))))))
+(defn view-rank [] (case (:view @app) :cube 3 :hypercube 4 2))
+(defn view-axes [] (vec (take (view-rank) (concat (if (volume?) (distinct (axis-queue)) (axis-queue)) (repeat 0)))))
+(defn mapping [] (vec (take 2 (view-axes))))
+(defn axis-order [] (axis-queue))
 (defn navigation-axes []
-  (let [axes (view-axes)]
-    (into (vec axes) (remove (set axes) (axis-order)))))
-(defn remember-expelled! [old-axes new-axes]
-  ;; Keep active axes in the global history too. Changing view must not destroy
-  ;; their position, or the hidden order would depend on the previous view.
-  (let [n (get-in @app [:doc :dimensions])
-        lost (filter #(and (<= 0 % n) (not ((set new-axes) %))) old-axes)]
-    (when (seq lost)
-      (swap! app assoc-in [:doc :view :axis-order]
-             (vec (distinct (concat lost (axis-order))))))))
+  (cond (volume?) (vec (distinct (axis-queue)))
+        (zero? (get-in @app [:doc :dimensions])) [0 0] :else (axis-queue)))
+(defn install-axis-queue! [queue clear-named?]
+  (let [queue (e/full-axis-queue (assoc-in (:doc @app) [:view :axes] queue))
+        slots #(vec (take % (concat (distinct queue) (repeat 0))))]
+    (swap! app (fn [state]
+                 (cond-> (-> state (assoc :cube-axes (slots 3) :hyper-axes (slots 4))
+                             (assoc-in [:doc :view :axes] queue)
+                             (assoc-in [:doc :view :mapping] (vec (take 2 (concat queue [0])))))
+                   clear-named? (assoc :named-focus nil))))))
+(defn install-axis-prefix! [axes clear-named?]
+  (install-axis-queue! (into (vec axes) (remove (set axes) (axis-queue))) clear-named?))
 
 (defn selected-coords []
   (if (:named-focus @app) [(coord)]
@@ -139,63 +138,50 @@
            :hyper-options (assoc (hyper-options) :size (preview/fit-shape (preview/bounds-shape bounds (:hyper-axes @app)))))
     (notify! "No populated numeric cells to fit.")))
 
+(defn refit-view! []
+  (when (volume?)
+    (let [cube? (= :cube (:view @app)) fit-key (if cube? :cube-fit :hyper-fit)]
+      (when (get @app fit-key)
+        (if (e/active-bounds (:doc @app)) ((if cube? fit-cube! fit-hyper!))
+          (swap! app assoc fit-key false))))))
 (defn set-volume-axes! [view axes clear-named?]
   (guard!
-    #(let [n (get-in @app [:doc :dimensions]) rank (if (= view :cube) 3 4)
-           axes-key (if (= view :cube) :cube-axes :hyper-axes)
-           fit-key (if (= view :cube) :cube-fit :hyper-fit) old-axes (view-axes)]
+    #(let [n (get-in @app [:doc :dimensions]) rank (if (= view :cube) 3 4)]
        (when-not (and (= rank (count axes) (count (set axes)))
-                      (every? (fn [d] (and (e/safe-integer? d) (<= 0 d n))) axes))
+                     (every? (fn [d] (and (e/safe-integer? d) (<= 0 d n))) axes))
          (e/fail "Preview axes must be distinct dimensions (including null)."))
-       (swap! app (fn [s] (cond-> (-> s (assoc axes-key axes)
-                                        (assoc-in [:doc :view :mapping] (vec (take 2 axes))))
-                           clear-named? (assoc :named-focus nil))))
-       (remember-expelled! old-axes axes)
-       (ensure-visible!)
-       (when (get @app fit-key)
-         (if (e/active-bounds (:doc @app)) ((if (= view :cube) fit-cube! fit-hyper!))
-           (swap! app assoc fit-key false))))))
+       (install-axis-prefix! axes clear-named?)
+       (ensure-visible!) (refit-view!))))
 (defn set-cube-axes!
   ([axes] (set-cube-axes! axes true))
   ([axes clear-named?] (set-volume-axes! :cube axes clear-named?)))
-(defn set-hyper-axis! [axis d]
-  (set-volume-axes! :hypercube (preview/replace-axis (:hyper-axes @app) axis d) true))
+(declare set-mapping!)
+(defn set-hyper-axis! [axis d] (set-mapping! axis d))
 
 (defn sync-cube! []
-  (when (volume?)
-    (let [n (get-in @app [:doc :dimensions]) view (:view @app) rank (if (= view :cube) 3 4)
-          old-axes (view-axes)]
-      (if (< (inc n) rank)
-        (do (swap! app assoc :view :plane) (remember-expelled! old-axes (mapping)))
-        (set-volume-axes! view
-          (vec (take rank (distinct (filter #(and (e/safe-integer? %) (<= 0 % n))
-                                           (concat (mapping) old-axes (navigation-axes)))))) false)))))
+  (when (< (inc (get-in @app [:doc :dimensions])) (view-rank)) (swap! app assoc :view :plane))
+  (install-axis-queue! (axis-queue) false)
+  (refit-view!))
 
 (defn switch! [d]
   (when (and (e/safe-integer? d) (<= 0 d (get-in @app [:doc :dimensions])))
     (if (volume?)
       (set-volume-axes! (:view @app) (preview/enqueue-dimension (view-axes) d) true)
-      (let [old-axes (mapping)]
-        (swap! app (fn [s] (-> s (assoc :named-focus nil)
-                               (update-in [:doc :view :mapping] e/switch-dimension d))))
-        (remember-expelled! old-axes (mapping))
+      (do
+        (install-axis-prefix! (e/switch-dimension (mapping) d) true)
         (let [[x y] (mapping)]
           (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
         (ensure-visible!)))))
 
-(defn set-cube-axis! [axis d]
-  (set-cube-axes! (preview/replace-axis (:cube-axes @app) axis d)))
+(defn set-cube-axis! [axis d] (set-mapping! axis d))
 
 (defn set-mapping! [axis d]
-  (if (volume?)
-    (set-volume-axes! (:view @app) (preview/replace-axis (view-axes) axis d) true)
-    (let [other (if (= axis 0) 1 0) m (mapping)
-          m (if (and (pos? d) (= d (nth m other))) (assoc m other (nth m axis)) m)]
-      (let [old-axes (mapping)]
-        (swap! app assoc-in [:doc :view :mapping] (assoc m axis d))
-        (remember-expelled! old-axes (mapping)))
-      (swap! app assoc :named-focus nil)
-      (ensure-visible!))))
+  (guard! #(let [d (e/resolve-dimension (:doc @app) d)]
+             (when-not (= d (nth (view-axes) axis))
+               (if (and (not (volume?)) (zero? d))
+                 (install-axis-prefix! (assoc (mapping) axis 0) true)
+                 (install-axis-queue! (preview/replace-axis (if (volume?) (vec (distinct (axis-queue))) (axis-queue)) axis d) true))
+               (ensure-visible!) (refit-view!)))))
 
 (defn change! [f]
   (let [old (:doc @app) new (f old)]
@@ -225,8 +211,9 @@
     (str "(" (str/join "," (conj args "...rest")) ") => ")))
 
 (defn editor-template [editor]
-  (formula-template (get-in @app [:doc :dimensions])
-                    (or (:new-name editor) (some-> editor :coords first e/named?))))
+  (if (some-> editor :coords first e/hyperplane?) "(dimension,coordinate) => "
+    (formula-template (get-in @app [:doc :dimensions])
+                      (or (:new-name editor) (some-> editor :coords first e/named?)))))
 
 (defn set-editor-kind! [kind]
   (swap! app update :editor
@@ -244,6 +231,14 @@
              editor (if (and (= kind "formula") (str/blank? (:source editor)))
                       (assoc editor :source (editor-template editor) :focus-source true) editor)]
          (swap! app assoc :editor editor :command nil)))))
+
+(defn open-hyperplane! [dimension coordinate kind]
+  (guard! #(let [target (e/hyperplane-coord (:doc @app) dimension coordinate)
+                 cell (e/cell-at (:doc @app) target) kind (or kind (:kind cell) "value")
+                 editor {:coords [target] :kind kind :source (or (:source cell) "") :error nil}]
+             (swap! app assoc :editor
+                    (if (and (= kind "formula") (str/blank? (:source editor)))
+                      (assoc editor :source (editor-template editor) :focus-source true) editor)))))
 
 (defn new-named! []
   (if-not (editable?) (notify! "Open a table to create named cells.")
@@ -368,6 +363,7 @@
          :editor nil :rule-editor nil :dialog nil :command nil :undo [] :redo [] :view :plane
          :cube-axes [1 2 3] :cube-fit false :cube-initialized false
          :hyper-axes [1 2 3 4] :hyper-fit false :hyper-initialized false :css-draft (:css doc))
+  (install-axis-queue! (axis-queue) false)
   (let [[x y] (mapping)]
     (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
   (ensure-visible!))
@@ -429,21 +425,16 @@
 (defn toggle-panel! [panel]
   (swap! app update :panel #(when-not (= % panel) panel)))
 (defn set-view! [view]
-  (let [rank (case view :cube 3 :hypercube 4 2)
-        n (get-in @app [:doc :dimensions])
-        axes (if (= view :plane) (mapping)
-               (vec (take rank (distinct (navigation-axes)))))]
+  (let [rank (case view :cube 3 :hypercube 4 2) n (get-in @app [:doc :dimensions])]
     (when (or (= view :plane) (>= (inc n) rank))
-      (swap! app (fn [state] (cond-> (assoc state :view view :named-focus nil :editor nil)
-                              (= view :cube) (assoc :cube-axes axes)
-                              (= view :hypercube) (assoc :hyper-axes axes))))
-      (when-not (= view :plane)
-        (do
-          (set-volume-axes! view axes false)
-          (let [init-key (if (= view :cube) :cube-initialized :hyper-initialized)]
-            (when-not (get @app init-key)
-              (swap! app assoc init-key true)
-              (when (e/active-bounds (:doc @app)) ((if (= view :cube) fit-cube! fit-hyper!)))))))
+      ;; View changes reveal/hide a prefix of ONE queue. Never reconstruct W.
+      (install-axis-queue! (axis-queue) false)
+      (swap! app assoc :view view :named-focus nil :editor nil)
+      (when (volume?)
+        (let [init-key (if (= view :cube) :cube-initialized :hyper-initialized)]
+          (if (get @app init-key) (refit-view!)
+            (do (swap! app assoc init-key true)
+                (when (e/active-bounds (:doc @app)) ((if (= view :cube) fit-cube! fit-hyper!)))))))
       (ensure-visible!))))
 (defn toggle-3d! [] (set-view! (if (= :cube (:view @app)) :plane :cube)))
 (defn toggle-4d! [] (set-view! (if (= :hypercube (:view @app)) :plane :hypercube)))
@@ -463,23 +454,24 @@
     (let [cube? (= :cube (:view @app)) options ((if cube? cube-options hyper-options))]
       ((if cube? set-cube-option! set-hyper-option!) :labels (not (:labels options))))))
 (defn preview-wheel! [event]
-  (when (and (volume?) (not-any? @app [:editor :rule-editor :dialog]))
+  (let [cube? (= :cube (:view @app))
+        key (cond (.-altKey event) :zoom
+                  (and cube? (.-ctrlKey event)) :gap
+                  (and cube? (.-shiftKey event) (= "stack" (:layout (cube-options)))) :transparency)]
+   (when (and key (volume?) (not-any? @app [:editor :rule-editor :dialog]))
     (.preventDefault event)
-    (let [cube? (= :cube (:view @app))
-          options ((if cube? cube-options hyper-options))
-          key (cond (and cube? (.-ctrlKey event)) :gap
-                    (and cube? (.-shiftKey event)) :transparency :else :zoom)
+    (let [options ((if cube? cube-options hyper-options))
           raw (if (zero? (.-deltaY event)) (.-deltaX event) (.-deltaY event))
           delta (* raw (case (.-deltaMode event) 1 16 2 240 1))
           step (* (js/Math.sign delta) (max 1 (min 10 (js/Math.round (/ (abs delta) 12)))))
           [low high] (get preview/option-ranges key)
           value (max low (min high (+ (get options key) (* step (if (= key :transparency) 1 -1)))))]
       (when-not (zero? delta)
-        ((if cube? set-cube-option! set-hyper-option!) key value)))))
+        ((if cube? set-cube-option! set-hyper-option!) key value))))))
 (defn permute-axes! []
   (let [old-axes (view-axes) axes (preview/next-permutation old-axes)]
     (if (volume?) (set-volume-axes! (:view @app) axes true)
-      (do (swap! app assoc-in [:doc :view :mapping] axes) (ensure-visible!)))))
+      (do (install-axis-prefix! axes true) (ensure-visible!)))))
 (defn toggle-cube-layout! []
   (when (= :cube (:view @app))
     (set-cube-option! :layout (if (= "stack" (:layout (cube-options))) "slices" "stack"))))
@@ -574,7 +566,9 @@
                (when (or (not= (:theme old) (:theme new))
                          (not= (:cube-options old) (:cube-options new))
                          (not= (:hyper-options old) (:hyper-options new)))
-                 (.catch (db/save-preferences! {:theme (:theme new) :cube-options (cube-options) :hyper-options (hyper-options)}) report!)))))
+                 (.catch (db/save-preferences! {:theme (:theme new)
+                                               :cube-options (merge preview/default-options (:cube-options new))
+                                               :hyper-options (merge preview/hyper-default-options (:hyper-options new))}) report!)))))
 
 (defn init! []
   (-> (db/open!)

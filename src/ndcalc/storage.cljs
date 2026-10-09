@@ -49,6 +49,9 @@
                        (let [raw (js/JSON.parse (.-json record))
                              doc (js->clj raw :keywordize-keys true)]
                          (assoc doc
+                                :aliases (engine/decode-aliases (.-aliases raw))
+                                :hyperplanes (into {} (map (fn [k] [k (js->clj (aget (.-hyperplanes raw) k) :keywordize-keys true)])
+                                                           (if (.-hyperplanes raw) (js/Object.keys (.-hyperplanes raw)) #js [])))
                                 :cells (into {} (map (fn [[k v]] [k (js->clj v :keywordize-keys true)])
                                                      (map (fn [k] [k (aget (.-cells raw) k)])
                                                           (js/Object.keys (.-cells raw)))))

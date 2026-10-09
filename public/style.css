@@ -50,7 +50,7 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .dim-chip {display:flex; align-items:center; border:1px solid var(--line); border-radius:5px; height:32px; background:var(--surface); flex-shrink:0;}
 .dim-chip.active {border-color:color-mix(in srgb,var(--accent) 45%,var(--line)); background:var(--accent-soft);}
 .dim-chip button {display:flex; flex-direction:column; align-items:flex-start; min-width:48px; padding:1px 8px; gap:0;}
-.dim-name {font-size:15px; line-height:16px; font-weight:600;}
+.dim-name {font-size:15px; line-height:16px; font-weight:600; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .dim-chip.active .dim-name {color:var(--accent);}
 .dim-chip.inactive .dim-name {color:var(--muted);}
 .axis-tag {font-size:12px; line-height:12px; color:var(--faint);}
@@ -83,6 +83,19 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .grid-container {flex:1; min-height:0; overflow:auto; background:var(--grid); scrollbar-width:thin;}
 .sheet {border-collapse:separate; border-spacing:0; table-layout:fixed; width:100%; font-size:15px;}
 .sheet .row-head-col {width:46px;}
+.sheet .hyper-head-col {width:126px;}
+.sheet .hyperplane-cell {border-top:0; border-left:0;}
+.sheet thead tr:first-child th {height:28px;}
+.sheet .hyperplane-row th {height:36px;}
+.hyperplane-cell {min-width:0; overflow:hidden; background:var(--raised); border:1px solid var(--line-subtle);}
+.hyperplane-edit {display:flex; position:relative; width:100%; height:100%; min-height:34px; padding:0; text-align:left; align-items:center; color:var(--muted);}
+.hyperplane-edit:focus-visible,.hyperplane-edit:hover {outline:2px solid var(--accent); outline-offset:-2px;}
+.hyperplane-edit .cell-text {font-size:15px; display:block;}
+.hyperplane-placeholder {position:absolute; left:8px; color:var(--faint); pointer-events:none;}
+.row-value {position:sticky!important; left:46px; z-index:1;}
+.volume-coordinate,.volume-corner {display:flex; align-items:center; justify-content:center; color:var(--muted); background:var(--raised); font:12px 'IBM Plex Mono',monospace; overflow:hidden; white-space:nowrap; border:1px solid var(--line-subtle);}
+.cube-no-labels .hyperplane-edit .cell-text,.cube-no-labels .hyperplane-edit .formula-dot {display:block;}
+.axis-alias-fields {display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;}
 .sheet th,.sheet td {border-right:1px solid var(--line-subtle); border-bottom:1px solid var(--line-subtle); height:35px; padding:0; position:relative;}
 .sheet th {color:var(--faint); font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:400; background:var(--surface);}
 .sheet thead th {height:34px; border-bottom-color:var(--line);}
@@ -231,7 +244,8 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .tilt-control {display:flex; align-items:center; gap:5px; color:var(--faint); font-size:13px;}
 .tilt-control input {width:70px; accent-color:var(--accent);}
 .volume-tag {font:12px 'IBM Plex Mono',monospace; color:var(--faint); border:1px solid var(--line); padding:2px 5px; border-radius:3px; margin-left:auto;}
-.cube-stage {flex:1; min-height:260px; position:relative; overflow:hidden; cursor:grab; touch-action:none;}
+.cube-pan-space {position:relative;}
+.cube-stage {flex:1; min-height:260px; position:relative; overflow:auto; scrollbar-width:thin; cursor:grab; touch-action:none;}
 .cube-stage:active {cursor:grabbing;}
 .cube-stage .cube-cell {cursor:inherit;}
 .tilt-control output {min-width:32px; font:12px 'IBM Plex Mono',monospace;}
@@ -257,8 +271,11 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .hyper-stage {flex:1; min-height:0; overflow:auto; padding:8px;}
 .hyper-matrix {display:grid; gap:10px; align-items:start; width:max-content;}
 .hyper-corner,.hyper-column-label,.hyper-row-label {font:13px 'IBM Plex Mono',monospace; color:var(--accent); background:var(--surface); border:1px solid var(--line); padding:5px 8px; white-space:nowrap;}
-.hyper-column-label {position:sticky; top:0; z-index:3;}
-.hyper-row-label {position:sticky; left:0; z-index:2; align-self:stretch; display:flex; align-items:center;}
+.hyper-column-label {position:sticky; top:0; z-index:3; height:28px;}
+.hyper-column-value {position:sticky; top:38px; z-index:3; height:36px;}
+.hyper-row-value {position:sticky; left:106px; z-index:2; align-self:stretch;}
+.hyper-corner.value-corner {top:38px; height:36px;}
+.hyper-row-label {width:96px; overflow:hidden; position:sticky; left:0; z-index:2; align-self:stretch; display:flex; align-items:center;}
 .hyper-corner {position:sticky; top:0; left:0; z-index:4;}
 .hyper-panel {min-width:0;}
 @media (max-width:1100px) {.save-state {display:none;} .document-title {max-width:190px;} .inspector {width:280px;} .dimension-settings {font-size:0; gap:0;} .dimension-settings svg {width:18px;} .plane-description {display:none;} .bounds-label {max-width:240px;}}

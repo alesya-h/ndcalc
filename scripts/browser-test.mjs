@@ -23,6 +23,12 @@ const press = async (...keys) => {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 };
 const clickText = label => page.getByRole('button', {name:label, exact:true}).click();
+const setChecked = async (locator, checked) => {
+  // Reagent's controlled checkbox state is committed on the next render frame.
+  if (await locator.isChecked() !== checked) await locator.click();
+  await press();
+  assert.equal(await locator.isChecked(), checked);
+};
 const edit = async (source, formula = false) => {
   await press(formula ? 'I' : 'Enter');
   await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill(source);
@@ -145,12 +151,12 @@ try {
     await page.getByRole('textbox',{name:'Rule name'}).fill('named highlight edited');
     await page.getByRole('textbox',{name:'Coordinate predicate'}).fill('name => typeof name === "string" && name === "double"');
     await page.getByRole('textbox',{name:'Value predicate'}).fill('v => v === 42 ? ["heading"] : []');
-    await page.getByRole('checkbox',{name:'Rule enabled'}).uncheck();
+    await setChecked(page.getByRole('checkbox',{name:'Rule enabled'}),false);
     await page.getByRole('textbox',{name:'Coordinate predicate'}).focus();
     await press('Control+Enter');
     assert.equal(await page.locator('.rule-card').count(),4);
     assert.equal(await page.getByRole('checkbox',{name:'Enable named highlight edited'}).isChecked(),false);
-    await page.getByRole('checkbox',{name:'Enable named highlight edited'}).check();
+    await setChecked(page.getByRole('checkbox',{name:'Enable named highlight edited'}),true);
     await clickText('Move named highlight edited up');
     const names = await page.locator('.rule-name').allTextContents();
     assert.equal(names[2], 'named highlight edited');
@@ -313,7 +319,7 @@ try {
     await page.locator('body').click({position:{x:2,y:2}}); await press('t'); await clickText('Stack');
     assert.equal(await page.locator('.cube-cell').count(),512);
     assert.equal(await page.locator('.cube-layer').count(),8);
-    await page.getByRole('checkbox',{name:'3D show labels'}).uncheck();
+    await setChecked(page.getByRole('checkbox',{name:'3D show labels'}),false);
     const selectedBeforeDrag = await coord();
     const rotationBefore = Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue());
     const stage = await page.locator('.cube-stage').boundingBox();
@@ -324,7 +330,11 @@ try {
     assert.equal(await coord(),selectedBeforeDrag);
     const zoom = page.getByRole('slider',{name:'3D zoom'});
     const beforeWheel = Number(await zoom.inputValue());
-    await page.mouse.wheel(0,-120); await press();
+    const beforePan = await page.locator('.cube-stage').evaluate(el=>[el.scrollLeft,el.scrollTop]);
+    await page.mouse.wheel(80,120); await press();
+    assert.equal(Number(await zoom.inputValue()),beforeWheel);
+    assert.notDeepEqual(await page.locator('.cube-stage').evaluate(el=>[el.scrollLeft,el.scrollTop]),beforePan);
+    await page.keyboard.down('Alt'); await page.mouse.wheel(0,-120); await page.keyboard.up('Alt'); await press();
     assert.ok(Number(await zoom.inputValue()) > beforeWheel);
     const gap = page.getByRole('slider',{name:'3D layer gap'});
     const beforeGap = Number(await gap.inputValue());
@@ -387,7 +397,11 @@ try {
     assert.equal(await page.locator('.cube-slice').first().evaluate(el=>getComputedStyle(el).opacity),'1');
     const hyperZoom = page.getByRole('slider',{name:'4D zoom'});
     const hBefore = Number(await hyperZoom.inputValue());
-    await page.locator('.hyper-stage').hover(); await page.mouse.wheel(0,-120); await press();
+    await page.locator('.hyper-stage').hover();
+    await page.mouse.wheel(120,180); await press();
+    assert.equal(Number(await hyperZoom.inputValue()),hBefore);
+    assert.ok(await page.locator('.hyper-stage').evaluate(el=>el.scrollLeft>0 && el.scrollTop>0));
+    await page.keyboard.down('Alt'); await page.mouse.wheel(0,-120); await page.keyboard.up('Alt'); await press();
     assert.ok(Number(await hyperZoom.inputValue()) > hBefore);
     await page.screenshot({path:'/tmp/ndcalc-lch-comparison.png'});
   });
@@ -468,7 +482,7 @@ try {
     assert.equal(await page.locator('.cube-cell').count(),16);
     assert.equal((await page.locator('.cube-cell').evaluateAll(els=>new Set(els.map(el=>el.dataset.coord)).size)),16);
     assert.equal(await page.locator('.cube-current').count(),1);
-    await page.getByRole('checkbox',{name:'4D show labels'}).check();
+    await setChecked(page.getByRole('checkbox',{name:'4D show labels'}),true);
     await page.locator('.toast').waitFor({state:'hidden'});
     await page.screenshot({path:'/tmp/ndcalc-4d.png'});
     const orders = new Set(); const selected = await coord();
@@ -485,7 +499,7 @@ try {
     await edit('(a,b,c,d) => a+b+c+d',true); await waitText([0,0,1,1],'2');
     await press('u'); await waitText([0,0,1,1],'[0,0,1,1]');
     assert.equal(await page.locator('.hyper-view').count(),1);
-    await page.getByRole('checkbox',{name:'4D show labels'}).uncheck();
+    await setChecked(page.getByRole('checkbox',{name:'4D show labels'}),false);
     await page.waitForTimeout(150); await page.reload();
     await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'4D colors',exact:true})}).locator('.document-open').click();
     await clickText('4D');
@@ -504,6 +518,58 @@ try {
     assert.equal(await page.getByRole('spinbutton',{name:'3D Z size'}).inputValue(),'1');
     assert.equal(await page.locator('.cube-layer,.cube-slice').count(),1);
     await press('PageUp'); assert.equal(await coord(),point);
+  });
+  await check('shared full queue preserves W across 4D, 3D, plane, and reload', async () => {
+    await create('shared queue',8); await clickText('4D');
+    await page.getByLabel('4D W dimension').selectOption('8'); await page.getByLabel('4D W dimension').blur(); await press();
+    for (const name of ['3D','Plane','4D','Plane','3D','4D']) {
+      await clickText(name);
+      if (name==='4D') assert.equal(await page.getByLabel('4D W dimension').inputValue(),'8');
+    }
+    await page.waitForTimeout(200); await page.reload(); await page.locator('.document-card').first().waitFor();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'shared queue',exact:true})}).locator('.document-open').click();
+    await clickText('4D'); assert.equal(await page.getByLabel('4D W dimension').inputValue(),'8');
+  });
+  await check('aliases, editable hyperplane headers, coordinate objects, dependencies, and persistence', async () => {
+    await create('header references',4); await clickText('Dimensions');
+    for (const [index,alias] of ['date','department','scenario','currency'].entries())
+      await page.getByLabel(`Axis ${index+1} alias`,{exact:true}).fill(alias);
+    await clickText('Apply');
+    assert.match(await page.locator('.dimension-chips').innerText(),/date/);
+    assert.equal(await page.getByLabel('X dimension',{exact:true}).locator('option:checked').innerText(),'date');
+    assert.equal(await page.locator('.sheet thead tr').count(),2);
+    assert.equal(await page.locator('.sheet tbody tr').first().locator('th').count(),2);
+    await go(41,0); await edit('10');
+    await page.getByRole('button',{name:'Edit hyperplane cell date at 41',exact:true}).click();
+    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("'Earlier'"); await press('Control+Enter');
+    await go(42,0);
+    await page.getByRole('button',{name:'Edit hyperplane cell date at 42',exact:true}).click();
+    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("'Today'"); await press('Control+Enter');
+    await page.getByRole('button',{name:'Edit hyperplane cell department at 0',exact:true}).click();
+    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("'Design'"); await press('Control+Enter');
+    for (const [source,expected] of [["=> $(_.offset('date',-1))+1",'11'],["=> _.offset('date',-1).value()+1",'11'],
+                                    ["=> $$('department',_)",'Design'],["=> _.value('department')",'Design'],
+                                    ["=> $$['department']",'Design'],["=> $$.department",'Design'],["=> $$(1,42)",'Today']]) {
+      await page.locator('body').click({position:{x:2,y:2}}); await edit(source,true); await waitText([42,0,0,0],expected);
+    }
+    await page.getByRole('button',{name:'Edit hyperplane cell date at 42',exact:true}).focus(); await press('I');
+    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("=> _.offset('date',-1).value() + ' +1'");
+    await press('Control+Enter'); await waitText([42,0,0,0],'Earlier +1');
+    await page.locator('body').click({position:{x:2,y:2}}); await edit('=> $$.department',true);
+    await page.getByRole('button',{name:'Edit hyperplane cell department at 0',exact:true}).click();
+    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("'QA'"); await press('Control+Enter');
+    await waitText([42,0,0,0],'QA'); await press('u'); await waitText([42,0,0,0],'Design');
+    await clickText('4D');
+    assert.ok(await page.locator('.hyper-column-value').count());
+    assert.ok(await page.locator('.hyper-row-value').count());
+    assert.ok(await page.getByRole('button',{name:'Edit hyperplane cell date at 41',exact:true}).count());
+    await page.screenshot({path:'/tmp/ndcalc-hyperplane-headers.png'});
+    await clickText('Plane'); await page.waitForTimeout(200); await page.reload();
+    await page.locator('.document-card').first().waitFor();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'header references',exact:true})}).locator('.document-open').click();
+    await waitText([42,0,0,0],'Design');
+    assert.equal(await page.getByLabel('X dimension',{exact:true}).locator('option:checked').innerText(),'date');
+    assert.equal(await page.getByRole('button',{name:'Edit hyperplane cell date at 42',exact:true}).locator('.cell-text').innerText(),'Earlier +1');
   });
   await check('realistic hypertables, animated formatting, and a live ledger control', async () => {
     await page.emulateMedia({reducedMotion:'no-preference'});

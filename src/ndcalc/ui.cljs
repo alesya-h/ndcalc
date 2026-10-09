@@ -67,10 +67,10 @@
        [icon :help]]]]))
 
 (def shortcuts
-  [["MOVE" [["← ↑ ↓ →" "Move X/Y"] ["Home / End" "First / last populated cell in this row (plane)"] ["PgUp / PgDn" "Move third axis; last expelled axis in plane"] ["Ctrl+↑ / ↓" "Move third axis"] ["Ctrl+← / →" "Move fourth axis"] ["Alt+↑↓ / ←→" "Move fifth / sixth axes"] ["Ctrl+Alt+arrows" "Move seventh / eighth axes"] ["⇧ + movement" "Extend selection across dimensions"] ["Tab / ⇧Tab" "Next / previous column"]]]
+  [["MOVE" [["← ↑ ↓ →" "Move X/Y"] ["Home / End" "First / last populated cell in this row (plane)"] ["PgUp / PgDn" "Move third axis in the shared queue"] ["Ctrl+↑ / ↓" "Move third axis"] ["Ctrl+← / →" "Move fourth axis"] ["Alt+↑↓ / ←→" "Move fifth / sixth axes"] ["Ctrl+Alt+arrows" "Move seventh / eighth axes"] ["⇧ + movement" "Extend selection across dimensions"] ["Tab / ⇧Tab" "Next / previous column"]]]
    ["DIMENSIONS" [["1–9" "Rotate / enqueue a dimension"] ["0" "Null axis: always one cell deep"] ["T" "Next axis permutation: 2 / 6 / 24"] ["g15 ↵" "Go to X coordinate 15"] ["G-15 ↵" "Go to Y coordinate −15"] ["b / B" "First active column / row"] ["e / E" "Last active column / row"]]]
    ["EDIT" [["↵ / i" "Edit the current cell"] ["⇧↵ / I" "Edit as a formula"] ["v / Ctrl+v" "Toggle visual-block selection"] ["⇧ + arrows" "Extend a selection"] ["y / p" "Copy / paste cells"] ["Del" "Clear cell or selection"] ["d / D" "Clear current column / row"] ["u / Ctrl+z" "Undo"] ["Ctrl+⇧z" "Redo"] ["Ctrl+↵" "Apply an open editor"] ["Esc" "Cancel / normal mode"]]]
-   ["PANELS" [["n" "Named cells"] ["N" "New named cell"] ["c" "CSS"] ["r" "Formatting rules"] ["t" "Cycle 2D → 3D → 4D"] ["f / F" "Follow cell / fit bounds (3D/4D)"] ["l" "Toggle labels (3D/4D)"] ["Scroll" "Zoom (3D/4D)"] ["Ctrl+scroll" "Layer gap (3D)"] ["⇧+scroll" "Transparency (3D stack)"] ["h" "Toggle this cheatsheet"]]]])
+   ["PANELS" [["n" "Named cells"] ["N" "New named cell"] ["c" "CSS"] ["r" "Formatting rules"] ["t" "Cycle 2D → 3D → 4D"] ["f / F" "Follow cell / fit bounds (3D/4D)"] ["l" "Toggle labels (3D/4D)"] ["Alt+scroll" "Zoom (3D/4D)"] ["Scroll" "Pan horizontally / vertically"] ["Ctrl+scroll" "Layer gap (3D)"] ["⇧+scroll" "Transparency (3D stack)"] ["h" "Toggle this cheatsheet"]]]])
 
 (defn help-sidebar []
   [:aside.help-sidebar {:aria-label "Keyboard shortcuts"}
@@ -81,14 +81,15 @@
      [:section.shortcut-section [:h3 heading]
       (for [[key description] keys]
         ^{:key key} [:div.shortcut [:kbd key] [:span description]])])
-   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". Visual selection survives plane and slice changes, selecting every cell between its n-dimensional corners. In 3D/4D, dimension keys append to the axis queue, including null. Hidden axes retain a global recency order across view changes. Shift extends the same selection in every direction."]])
+   [:div.help-note "Lowercase axis operations use " [:b "X"] ". Uppercase uses " [:b "Y"] ". Visual selection survives plane and slice changes, selecting every cell between its n-dimensional corners. In 3D/4D, dimension keys append to the axis queue, including null. All views share one full axis queue; switching views hides/reveals axes without discarding Z or W. Shift extends the same selection in every direction."]])
 
 (defn slice-input [dimension value]
   ;; Keep intermediate text (notably "-") so controlled inputs allow negative typing.
   (r/with-let [draft (r/atom nil)]
     [:input {:type "text" :input-mode "numeric"
              :value (if (nil? @draft) (str value) @draft)
-             :aria-label (str "Dimension " dimension " slice coordinate")
+             :aria-label (if-let [alias (get-in @s/app [:doc :aliases dimension])]
+                           (str alias " slice coordinate") (str "Dimension " dimension " slice coordinate"))
              :on-focus #(reset! draft (str value))
              :on-change (fn [event]
                           (let [text (.. event -target -value)]
@@ -108,7 +109,7 @@
     [:label.axis-select [:span (if (zero? axis) "X" "Y")]
      [:select {:value (nth m axis) :aria-label (str (if (zero? axis) "X" "Y") " dimension")
                :on-change #(s/set-mapping! axis (js/Number (.. % -target -value)))}
-      (for [d (range (inc n))] ^{:key d} [:option {:value d} (if (zero? d) "∅ null" (str "D" d))])]]))
+      (for [d (range (inc n))] ^{:key d} [:option {:value d} (e/axis-label (:doc @s/app) d)])]]))
 
 (defn dimension-bar []
   (let [{:keys [doc view cube-axes]} @s/app n (:dimensions doc)
@@ -121,22 +122,22 @@
         (let [axis-index (first (keep-indexed #(when (= d %2) %1) axes)) active (some? axis-index)]
           ^{:key d}
           [:div {:class (str "dim-chip " (if active "active" "inactive"))}
-           [:button {:title (if (s/volume?) (str "Move dimension " d " to the end of the axis queue")
-                               (str "Rotate dimension " d " into the plane")) :on-click #(s/switch! d)}
-            [:span.dim-name (str "D" d)]
+           [:button {:title (if (s/volume?) (str "Move " (e/axis-label doc d) " to the end of the visible axis queue")
+                               (str "Rotate " (e/axis-label doc d) " into the plane")) :on-click #(s/switch! d)}
+            [:span.dim-name (e/axis-label doc d)]
             [:span.axis-tag
              (if active (nth ["X" "Y" "Z" "W"] axis-index)
                (let [slot (first (keep-indexed #(when (= d %2) (inc %1)) navigation))]
                  (if (and slot (<= slot 8)) (str "nav" slot) "fixed")))]]
            [slice-input d (nth c (dec d))]]))]
-     [:button.button.dimension-settings {:on-click #(swap! s/app assoc :dialog {:type :dimensions :n n})
-                                        :title "Change the table's dimension count"}
+     [:button.button.dimension-settings {:on-click #(swap! s/app assoc :dialog {:type :dimensions :n n :aliases (:aliases doc)})
+                                        :title "Change dimension count and aliases"}
       [icon :plus 14] "Dimensions"]]))
 
 (defn format-content [runtime coord cell & [extra-class]]
   (let [result ((:evaluate runtime) coord) formatting ((:format runtime) coord result)
         error (:error result) text (if error (str "#ERROR " error) (if cell (e/stringify (:value result)) ""))
-        tooltip (str (e/coord-label coord) (when cell (str "\n" (:kind cell) ": " (:source cell)))
+        tooltip (str (e/target-label (:doc runtime) coord) (when cell (str "\n" (:kind cell) ": " (:source cell)))
                      "\n" text (when (seq (:errors formatting)) (str "\nFormatting: " (str/join "\n" (:errors formatting)))))]
     [:span {:class (str "cell-content " extra-class " " (str/join " " (:classes formatting))
                        (when error " cell-error"))
@@ -146,12 +147,30 @@
      [:span.cell-text text]
      (when (seq (:errors formatting)) [:span.format-warning {:title (str/join "\n" (:errors formatting))} "!"])]))
 
+(defn hyperplane-header [doc runtime dimension coordinate]
+  (let [target (e/hyperplane-coord doc dimension coordinate) cell (e/cell-at doc target)]
+    [:button.hyperplane-edit
+     {:type "button" :data-hyperplane (e/coord-key [dimension coordinate])
+      :aria-label (str "Edit hyperplane cell " (e/axis-label doc dimension) " at " coordinate)
+      :title (str (e/target-label doc target) " · Click to edit; Shift+Enter / I for Formula")
+      :on-pointer-down #(.stopPropagation %)
+      :on-click #(s/open-hyperplane! dimension coordinate nil)
+      :on-key-down (fn [event]
+                     (when (#{"Enter" "i" "I" "Delete" "Backspace"} (.-key event))
+                       (.preventDefault event) (.stopPropagation event)
+                       (if (#{"Delete" "Backspace"} (.-key event))
+                         (s/change! #(e/put-cell % target nil))
+                         (s/open-hyperplane! dimension coordinate
+                                            (when (or (= "I" (.-key event)) (.-shiftKey event)) "formula")))))}
+     [format-content runtime target cell "hyperplane-content"]
+     (when-not cell [:span.hyperplane-placeholder "—"])]))
+
 (defn grid []
   (r/with-let [node (atom nil) observer (atom nil)
                measure (fn []
                          (when @node
-                           (let [cols (max 1 (min 24 (js/Math.floor (/ (- (.-clientWidth @node) 46) 126))))
-                                 rows (max 1 (min 40 (js/Math.floor (/ (- (.-clientHeight @node) 34) 35))))
+                           (let [cols (max 1 (min 24 (js/Math.floor (/ (- (.-clientWidth @node) 172) 126))))
+                                 rows (max 1 (min 40 (js/Math.floor (/ (- (.-clientHeight @node) 64) 35))))
                                  size [cols rows]]
                              (when-not (= size (:grid-size @s/app))
                                (swap! s/app assoc :grid-size size)
@@ -173,17 +192,19 @@
       [:div {:class (str "grid-container sheet-scope" (when (zero? x) " null-x") (when (zero? y) " null-y"))
              :ref ref-fn :data-testid "grid"}
        [:table.sheet {:role "grid" :aria-label "N-dimensional spreadsheet" :aria-rowcount (count ys) :aria-colcount (count xs)}
-        [:colgroup [:col.row-head-col] (for [a xs] ^{:key a} [:col])]
-        [:thead [:tr
-                 [:th.corner {:title "X coordinates across, Y coordinates down"} "Y" [:span " / X"]]
-                 (for [a xs]
-                   ^{:key a} [:th {:scope "col" :class (when (= a (e/axis-value current x)) "current-axis")}
-                             (if (zero? x) "∅" a)])]]
+        [:colgroup [:col.row-head-col] [:col.hyper-head-col] (for [a xs] ^{:key a} [:col])]
+        [:thead
+         [:tr [:th.corner {:col-span 2 :title "X coordinates across, Y coordinates down"}
+               (str (e/axis-label doc y) " / " (e/axis-label doc x))]
+          (for [a xs] ^{:key a} [:th {:scope "col" :class (when (= a (e/axis-value current x)) "current-axis")} a])]
+         [:tr.hyperplane-row [:th.corner {:col-span 2} "Axis values"]
+          (for [a xs] ^{:key a} [:th.hyperplane-cell {:scope "col"} [hyperplane-header doc runtime x a]])]]
         [:tbody
          (for [b ys]
            ^{:key b}
            [:tr [:th.row-head {:scope "row" :class (when (= b (e/axis-value current y)) "current-axis")}
                  (if (zero? y) "∅" b)]
+                [:th.hyperplane-cell.row-value {:scope "row"} [hyperplane-header doc runtime y b]]
             (for [a xs]
               (let [c (e/plane-coord current mapping a b) cell (e/cell-at doc c)
                     current? (and (not named-focus) (= c current))
@@ -226,9 +247,9 @@
 
 (defn cube-layer [context window options scene layer at-z stacked?]
   (let [{:keys [doc current origin axes runtime bounds anchor]} context
-        [x y z] axes [xs ys _] (:ranges window) [nx _ nz] (:shape window)]
+        [x y z] axes [xs ys _] (:ranges window) [nx ny nz] (:shape window)]
     [:section {:class (if stacked? "cube-layer" "cube-slice")
-               :aria-label (str "D" z " slice " at-z)
+               :aria-label (str (e/axis-label doc z) " slice " at-z)
                :style (merge {:width (:width scene) :opacity (if stacked? (- 1 (/ (:transparency options) 100)) 1)}
                              (if stacked?
                                {:height (:height scene)
@@ -236,25 +257,34 @@
                                {:zoom (/ (:zoom options) 100)}))}
      [:div.cube-layer-label
       {:style (when stacked? {:transform (str "rotateZ(" (- (:rotation options)) "deg) rotateX(" (- (:tilt options)) "deg)")})}
-      (str "D" z " = " at-z (when (= 4 (count axes)) (str " · D" (nth axes 3) " = " (e/axis-value origin (nth axes 3)))))]
-     [:div.cube-layer-grid {:role "grid" :aria-label (str "D" z " layer " at-z) :style {:grid-template-columns (str "repeat(" nx ", minmax(0,1fr))")
-                                    :grid-auto-rows (str (:row-height scene) "px")}}
-      (for [b ys a xs]
-        (let [at (-> (or origin current) (e/set-axis x a) (e/set-axis y b) (e/set-axis z at-z))
-              selected? (and anchor (e/in-block? anchor current at))]
-          ^{:key (e/coord-key at)}
-          [:div {:role "gridcell" :class (str "cube-cell " (when-not (e/active? bounds at) "out-of-bounds ")
-                                               (when selected? "selected ") (when (= at current) "cube-current"))
+      (str (e/axis-label doc z) " = " at-z (when (= 4 (count axes)) (str " · " (e/axis-label doc (nth axes 3)) " = " (e/axis-value origin (nth axes 3)))))]
+     [:div.cube-layer-grid {:role "grid" :aria-label (str (e/axis-label doc z) " layer " at-z)
+                            :style {:grid-template-columns (str "42px 126px repeat(" nx ", minmax(0,1fr))")
+                                    :grid-template-rows (str "28px 36px repeat(" ny ", " (:row-height scene) "px)")}}
+      [:div.volume-corner {:style {:grid-column "1 / span 2"}} (str (e/axis-label doc y) " / " (e/axis-label doc x))]
+      (for [a xs] ^{:key (str "x" a)} [:div.volume-coordinate {:role "columnheader"} a])
+      [:div.volume-corner {:style {:grid-column "1 / span 2"}} "Axis values"]
+      (for [a xs] ^{:key (str "xv" a)} [:div.hyperplane-cell {:role "columnheader"} [hyperplane-header doc runtime x a]])
+      (for [b ys]
+        ^{:key b}
+        [:<> [:div.volume-coordinate {:role "rowheader"} b]
+         [:div.hyperplane-cell {:role "rowheader"} [hyperplane-header doc runtime y b]]
+         (for [a xs]
+           (let [at (-> (or origin current) (e/set-axis x a) (e/set-axis y b) (e/set-axis z at-z))
+                 selected? (and anchor (e/in-block? anchor current at))]
+             ^{:key (e/coord-key at)}
+             [:div {:role "gridcell" :class (str "cube-cell " (when-not (e/active? bounds at) "out-of-bounds ")
+                                                  (when selected? "selected ") (when (= at current) "cube-current"))
                     :tab-index (if (= at current) 0 -1) :aria-label (e/coord-key at) :aria-selected (boolean (or (= at current) selected?))
                     :data-coord (e/coord-key at)
                     :on-click (fn [event] (when-not stacked? (.focus (.-currentTarget event)) (s/select! at (.-shiftKey event))))
                     :on-double-click #(when-not stacked? (s/select! at false) (s/open-editor! nil))}
-           [format-content runtime at (e/cell-at doc at)]
-           [:span.cube-coord (e/coord-key at)]]))]]))
+              [format-content runtime at (e/cell-at doc at)]
+              [:span.cube-coord (e/coord-key at)]]))])]]))
 
 (defn cube []
   (r/with-let [stage-size (r/atom [800 500]) node (atom nil) observer (atom nil)
-               drag (atom nil) frame (atom nil) pending-camera (atom nil)
+               drag (atom nil) frame (atom nil) pending-camera (atom nil) centered (atom false)
                flush-camera (fn []
                               (when @frame (js/cancelAnimationFrame @frame) (reset! frame nil))
                               (when-let [camera @pending-camera]
@@ -278,13 +308,18 @@
                ref-fn (fn [el]
                         (when-not (identical? el @node)
                           (when @observer (.disconnect @observer))
-                          (reset! node el)
+                          (reset! node el) (reset! centered false)
                           (when el
                             (reset! observer
                                     (js/ResizeObserver.
                                       (fn [_ _]
                                         (let [size [(.-clientWidth el) (.-clientHeight el)]]
-                                          (when-not (= size @stage-size) (reset! stage-size size))))))
+                                          (when-not (= size @stage-size) (reset! stage-size size))
+                                          (when-not @centered
+                                            (reset! centered true)
+                                            (r/after-render #(when (identical? el @node)
+                                                               (set! (.-scrollLeft el) (/ (- (.-scrollWidth el) (.-clientWidth el)) 2))
+                                                               (set! (.-scrollTop el) (/ (- (.-scrollHeight el) (.-clientHeight el)) 2)))))))))
                             (.observe @observer el))) nil)]
     (let [{:keys [doc cube-axes cube-fit anchor]} @s/app options (s/cube-options)
           window (s/cube-window) scene (preview/scene (:shape window) options @stage-size)
@@ -299,7 +334,7 @@
            [:label.axis-select [:span label]
             [:select {:value (nth cube-axes i) :aria-label (str "3D " label " dimension")
                       :on-change #(s/set-cube-axis! i (js/Number (.. % -target -value)))}
-             (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (if (zero? d) "∅ null" (str "D" d))])]]
+             (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (e/axis-label doc d)])]]
            [:label.cube-size "size"
             [:input {:type "number" :min 1 :max preview/max-axis-size :step 1 :value (nth (:size options) i)
                      :aria-label (str "3D " label " size") :disabled (zero? (nth cube-axes i))
@@ -332,21 +367,23 @@
          [wheel-region {:class "cube-stage" :ref ref-fn :tab-index 0 :aria-label "3D volume: drag to tilt and rotate"
                            :on-pointer-down pointer-down :on-pointer-move pointer-move
                            :on-pointer-up finish-drag :on-pointer-cancel finish-drag :on-lost-pointer-capture finish-drag}
-          [:div.cube-stack {:style {:width (:width scene) :height (:height scene)
-                                   :transform (str "translate(-50%, -50%) scale(" (:scale scene) ") rotateX("
-                                                   (:tilt options) "deg) rotateZ(" (:rotation options) "deg)")}}
-           (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
-             ^{:key at-z} [cube-layer context window options scene layer at-z true])]]
+          [:div.cube-pan-space {:style {:width (max (* 2 (first @stage-size)) (+ (first @stage-size) (* (:scale scene) (:projected-width scene))))
+                                       :height (max (* 2 (second @stage-size)) (+ (second @stage-size) (* (:scale scene) (:projected-height scene))))}}
+           [:div.cube-stack {:style {:width (:width scene) :height (:height scene)
+                                    :transform (str "translate(-50%, -50%) scale(" (:scale scene) ") rotateX("
+                                                    (:tilt options) "deg) rotateZ(" (:rotation options) "deg)")}}
+            (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
+              ^{:key at-z} [cube-layer context window options scene layer at-z true])]]]
          [wheel-region {:class "cube-slices"}
           (for [[layer at-z] (map-indexed vector (nth (:ranges window) 2))]
             ^{:key at-z} [cube-layer context window options scene layer at-z false])])
        [:p.cube-caption
         [:span.cube-ranges (str (str/join " × " (:shape window)) " · "
-                               (str/join " · " (map (fn [label axis start end] (str label " D" axis " " start "…" end))
+                               (str/join " · " (map (fn [label axis start end] (str label " " (e/axis-label doc axis) " " start "…" end))
                                                     ["X" "Y" "Z"] cube-axes (:start window) (:end window))))]
         (when (:clipped? window) [:span.preview-limit " · Bounded preview, not the entire active volume."])
         [:br] (if stacked? "Drag anywhere to tilt/rotate. " "Click to select, double-click to edit. ")
-        "Scroll zooms; Ctrl+scroll adjusts gap; Shift+scroll adjusts stack transparency. Enter/I edit; f follows, F fits, l labels."]])
+        "Scroll pans; Alt+scroll zooms; Ctrl+scroll adjusts gap; Shift+scroll adjusts stack transparency. Enter/I edit; f follows, F fits, l labels."]])
     (finally (when @observer (.disconnect @observer))
              (when @frame (js/cancelAnimationFrame @frame)))))
 
@@ -365,7 +402,7 @@
          [:label.axis-select [:span label]
           [:select {:value (nth hyper-axes i) :aria-label (str "4D " label " dimension")
                     :on-change #(s/set-hyper-axis! i (js/Number (.. % -target -value)))}
-           (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (if (zero? d) "∅ null" (str "D" d))])]]
+           (for [d (range (inc (:dimensions doc)))] ^{:key d} [:option {:value d} (e/axis-label doc d)])]]
          [:label.cube-size "size"
           [:input {:type "number" :min 1 :max preview/max-axis-size :value (nth (:size options) i)
                    :aria-label (str "4D " label " size") :disabled (zero? (nth hyper-axes i))
@@ -388,21 +425,24 @@
       [:button.button.compact {:on-click #(s/set-view! :plane)} "Open in plane"]
       [:span.cube-count (str (:total window) " cells")]]
      [wheel-region {:class "hyper-stage"}
-      [:div.hyper-matrix {:style {:grid-template-columns (str "max-content repeat(" (count ws) ", max-content)")}}
-       [:div.hyper-corner "Z / W"]
-       (for [at-w ws] ^{:key (str "w" at-w)} [:div.hyper-column-label (str "D" w " = " at-w)])
+      [:div.hyper-matrix {:style {:grid-template-columns (str "max-content 126px repeat(" (count ws) ", max-content)")}}
+       [:div.hyper-corner {:style {:grid-column "1 / span 2"}} (str (e/axis-label doc z) " / " (e/axis-label doc w))]
+       (for [at-w ws] ^{:key (str "w" at-w)} [:div.hyper-column-label (str (e/axis-label doc w) " = " at-w)])
+       [:div.hyper-corner.value-corner {:style {:grid-column "1 / span 2"}} "Axis values"]
+       (for [at-w ws] ^{:key (str "wv" at-w)} [:div.hyper-column-value.hyperplane-cell [hyperplane-header doc (:runtime context) w at-w]])
        (for [at-z (reverse zs)]
          ^{:key at-z}
-         [:<> [:div.hyper-row-label (str "D" z " = " at-z)]
+         [:<> [:div.hyper-row-label (str (e/axis-label doc z) " = " at-z)]
+          [:div.hyper-row-value.hyperplane-cell [hyperplane-header doc (:runtime context) z at-z]]
           (for [at-w ws]
             ^{:key at-w}
             [:div.hyper-panel {:data-z at-z :data-w at-w}
              [cube-layer (assoc context :origin (e/set-axis (:current context) w at-w))
               window options scene 0 at-z false]])])]]
      [:p.cube-caption
-      [:span.cube-ranges (str (str/join " × " (:shape window)) " · W D" w " horizontally · Z D" z " vertically")]
+      [:span.cube-ranges (str (str/join " × " (:shape window)) " · W " (e/axis-label doc w) " horizontally · Z " (e/axis-label doc z) " vertically")]
       (when (:clipped? window) [:span.preview-limit " · Bounded preview, not the entire active hypercube."])
-      [:br] "Each panel shows X/Y. PgUp/PgDn or Ctrl+↑↓ move Z; Ctrl+←→ moves W. Shift extends selection; Enter/I edit. Scroll zooms; f follows, F fits, l labels."]]))
+      [:br] "Each panel shows X/Y. PgUp/PgDn or Ctrl+↑↓ move Z; Ctrl+←→ moves W. Shift extends selection; Enter/I edit. Scroll pans; Alt+scroll zooms; f follows, F fits, l labels."]]))
 
 (defn cell-bar []
   (let [{:keys [doc view anchor]} @s/app c (s/coord) cell (e/cell-at doc c)
@@ -490,7 +530,7 @@
          (when-let [error (:error (nth (:rules (s/runtime)) index))] [:p.inline-error error])])]
      [:button.button.add-rule {:on-click #(s/open-rule! nil) :disabled (not editable)} [icon :plus 16] "Add rule"]
      [:div.panel-tip
-      [:p "Coordinate predicates receive spread coordinates—or a single string for a named cell. Value predicates return CSS classes or a style string."]
+      [:p "Coordinate predicates receive spread coordinates, a named string, or a coordinate object for hyperplane cells. _ is this coordinate; _.kind distinguishes cell / named / hyperplane. Values return classes or CSS."]
       [:p "Numeric cells are formatted only inside the active hypercube. Named-cell rules still apply."]]]))
 
 (defn css-panel []
@@ -600,8 +640,9 @@
               (.focus el)
               (.setSelectionRange el (count (.-value el)) (count (.-value el)))
               (swap! s/app assoc-in [:editor :focus-source] false))))))
-    [modal-shell (if new-name "New named cell" (if (> (count coords) 1) (str "Fill " (count coords) " cells") "Edit cell"))
-     (when-not new-name (str (e/coord-label (first coords)) (when (> (count coords) 1) (str " … " (e/coord-label (last coords))))))
+    [modal-shell (cond new-name "New named cell" (e/hyperplane? (first coords)) "Edit hyperplane cell"
+                       (> (count coords) 1) (str "Fill " (count coords) " cells") :else "Edit cell")
+     (when-not new-name (str (e/target-label (:doc @s/app) (first coords)) (when (> (count coords) 1) (str " … " (e/coord-label (last coords))))))
      [:div.modal-content
       (when new-name [:label.field "NAME" [:input {:auto-focus true :value name :placeholder "my_named_cell" :aria-label "Cell name"
                                                   :on-change #(swap! s/app assoc-in [:editor :name] (.. % -target -value))}]])
@@ -617,7 +658,7 @@
                                :placeholder (if (= kind "formula") (s/editor-template (:editor @s/app)) "42, \"hello\", { answer: 42 }, or x => x * 2")
                                :on-change #(swap! s/app assoc-in [:editor :source] (.. % -target -value))
                                :on-key-down #(when (and (or (.-ctrlKey %) (.-metaKey %)) (= "Enter" (.-key %))) (.preventDefault %) (s/save-editor!))}]]
-      [:p.editor-note (if (= kind "formula") "Coordinates are passed as function arguments. Read numeric or named cells with $(…). Missing cells return undefined."
+      [:p.editor-note (if (= kind "formula") "Coordinates are function arguments; => expression is shorthand. $ reads cells; $$ reads axis values; _ is this coordinate. Example: => _.offset('date', -1).value() + 1"
                          "A function entered as a Value stays a function—it is never called by the formula engine. Wrap text in quotes.")]
       (when error [:div.inline-error {:role "alert"} error])]
      [:button.button.primary {:on-click s/save-editor!} [icon :check 16] "Apply" [:kbd "Ctrl ↵"]]
@@ -646,12 +687,15 @@
      #(swap! s/app assoc :rule-editor nil)]))
 
 (defn submit-dialog! []
-  (let [{:keys [type title n document]} (:dialog @s/app)]
+  (let [{:keys [type title n document aliases]} (:dialog @s/app)]
     (case type
       :create (s/create-document! title (js/Number n))
       :rename (when-not (str/blank? title)
                 (s/change! #(assoc % :title (str/trim title))) (swap! s/app assoc :dialog nil))
-      :dimensions (try (s/change! #(e/resize-dimensions % (js/Number n)))
+      :dimensions (try (s/change! #(e/set-aliases (e/resize-dimensions % (js/Number n))
+                                                  (into {} (keep (fn [[d alias]]
+                                                                   (when (and (<= d (js/Number n)) (not (str/blank? alias)))
+                                                                     [d (str/trim alias)])) aliases))))
                        (swap! s/app assoc :dialog nil :anchor nil :named-focus nil :mode :normal)
                        (s/ensure-visible!)
                        (catch :default err (swap! s/app assoc-in [:dialog :error] (.-message err))))
@@ -659,7 +703,7 @@
       :delete (do (s/delete-document! document) (swap! s/app assoc :dialog nil)) nil)))
 
 (defn generic-dialog []
-  (let [{:keys [type title n document error]} (:dialog @s/app)
+  (let [{:keys [type title n document error aliases]} (:dialog @s/app)
         headings {:create "New table" :rename "Rename table" :dimensions "Table dimensions"
                   :trust "Trust this document?" :delete "Delete this table?"}]
     [modal-shell (get headings type) nil
@@ -672,7 +716,13 @@
                                             :auto-focus (= type :dimensions)
                                             :on-change #(swap! s/app assoc-in [:dialog :n] (.. % -target -value))}]
          [:span.field-help "0 = one cell · 1 = a row · 2 = a table · 3+ = a hypertable"]])
-      (when (= type :dimensions) [:p.editor-note "Dimensions containing non-zero populated coordinates cannot be removed. This never silently discards data."])
+      (when (= type :dimensions)
+        [:<> [:p.editor-note "Dimensions with non-zero coordinates or hyperplane cells cannot be removed. Aliases are optional and must be unique."]
+         [:div.axis-alias-fields
+          (for [d (range 1 (inc (let [value (js/Number n)] (if (e/safe-integer? value) (max 0 (min 32 value)) 0))))]
+            ^{:key d} [:label.field (str "D" d)
+                       [:input {:value (get aliases d "") :placeholder (str "D" d) :aria-label (str "Axis " d " alias")
+                                :on-change #(swap! s/app assoc-in [:dialog :aliases d] (.. % -target -value))}]])]])
       (when (= type :trust)
         [:div.trust-warning [:h3 (:title document)]
          [:p "This file contains executable JavaScript. Values, formulas, and formatting rules run with access to this page, its storage, and the network."]

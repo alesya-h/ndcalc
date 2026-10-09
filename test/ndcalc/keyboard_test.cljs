@@ -53,8 +53,8 @@
   (key! "t") (is (= :hypercube (:view @s/app)))
   (key! "t")
   (is (= 2 (nth (s/navigation-axes) 2)))
-  (is (= (get-in @s/app [:doc :view :axis-order])
-         (get-in (e/json->document (e/document->json (:doc @s/app))) [:view :axis-order]))))
+  (is (= (get-in @s/app [:doc :view :axes])
+         (get-in (e/json->document (e/document->json (:doc @s/app))) [:view :axes]))))
 
 (deftest modifier-arrows-reach-eight-dimensions-with-selection
   (doseq [[key mods] [["ArrowUp" {:ctrl true}] ["ArrowRight" {:ctrl true}]
@@ -128,6 +128,25 @@
                        :preventDefault #(reset! prevented true)}))
     (is (false? @prevented))))
 
+(deftest w-and-all-hidden-axes-survive-every-view-transition
+  (s/set-view! :hypercube)
+  (s/set-mapping! 3 8)
+  (is (= [1 2 3 8] (s/view-axes)))
+  (let [queue (s/axis-queue)]
+    (doseq [view [:cube :plane :hypercube :plane :cube :hypercube]]
+      (s/set-view! view)
+      (is (= queue (s/axis-queue))))
+    (is (= [1 2 3 8] (s/view-axes)))
+    (is (= queue (get-in (e/json->document (e/document->json (:doc @s/app))) [:view :axes])))))
+
+(deftest degenerate-plane-null-slots-survive-view-changes
+  (s/set-mapping! 0 0) (s/set-mapping! 1 0)
+  (is (= [0 0] (s/view-axes)))
+  (s/set-view! :cube) (is (= [0 2 1] (s/view-axes)))
+  (s/set-view! :plane) (is (= [0 0] (s/view-axes)))
+  (s/set-view! :cube) (s/set-mapping! 2 3)
+  (is (= [0 2 3] (s/view-axes))))
+
 (deftest hidden-recency-is-independent-of-view
   (doseq [d [3 4 5 6]] (s/switch! d))
   (let [order (s/axis-order)]
@@ -151,13 +170,14 @@
   (key! "t")
   (let [wheel (fn [mods]
                 (s/preview-wheel! #js {:deltaY -120 :deltaX 0 :deltaMode 0
-                                      :ctrlKey (boolean (:ctrl mods)) :shiftKey (boolean (:shift mods))
+                                      :ctrlKey (boolean (:ctrl mods)) :shiftKey (boolean (:shift mods)) :altKey (boolean (:alt mods))
                                       :preventDefault (fn [])}))]
-    (wheel {}) (is (= 110 (:zoom (s/cube-options))))
+    (wheel {}) (is (= 100 (:zoom (s/cube-options))))
+    (wheel {:alt true}) (is (= 110 (:zoom (s/cube-options))))
     (wheel {:ctrl true}) (is (= 74 (:gap (s/cube-options))))
     (s/set-cube-option! :transparency 50)
     (wheel {:shift true}) (is (= 40 (:transparency (s/cube-options))))
-    (key! "t") (wheel {}) (is (= 110 (:zoom (s/hyper-options)))))
+    (key! "t") (wheel {:alt true}) (is (= 110 (:zoom (s/hyper-options)))))
   (s/set-theme! "system") (swap! s/app assoc :system-dark true)
   (is (= "dark" (s/resolved-theme)))
   (swap! s/app assoc :system-dark false) (is (= "light" (s/resolved-theme)))

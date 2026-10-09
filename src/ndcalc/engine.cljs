@@ -11,27 +11,70 @@
   [dimensions coord]
   (when-not (and (safe-integer? dimensions) (<= 0 dimensions))
     (fail "Dimension count must be a non-negative integer."))
-  (let [v (vec coord)]
-    (if (and (= 1 (count v)) (string? (first v)))
-      (do (when (str/blank? (first v)) (fail "Named cells need a non-empty name.")) v)
-      (do
-        (when-not (every? safe-integer? v) (fail "Coordinates must be safe integers."))
-        (when (some #(not= 0 %) (drop dimensions v))
-          (fail (str "Coordinate is outside this " dimensions "D table.")))
-        (into (vec (take dimensions v)) (repeat (max 0 (- dimensions (count v))) 0))))))
+  (if (map? coord)
+    (let [[d c] (:hyperplane coord)]
+      (when-not (and (= #{:hyperplane} (set (keys coord))) (vector? (:hyperplane coord))
+                     (= 2 (count (:hyperplane coord))) (safe-integer? d) (<= 0 d dimensions)
+                     (safe-integer? c) (or (pos? d) (zero? c)))
+        (fail "Invalid hyperplane coordinate."))
+      coord)
+    (let [v (vec coord)]
+      (if (and (= 1 (count v)) (string? (first v)))
+        (do (when (str/blank? (first v)) (fail "Named cells need a non-empty name.")) v)
+        (do
+          (when-not (every? safe-integer? v) (fail "Coordinates must be safe integers."))
+          (when (some #(not= 0 %) (drop dimensions v))
+            (fail (str "Coordinate is outside this " dimensions "D table.")))
+          (into (vec (take dimensions v)) (repeat (max 0 (- dimensions (count v))) 0)))))))
 
-(defn named? [coord] (and (= 1 (count coord)) (string? (first coord))))
+(defn named? [coord] (and (sequential? coord) (= 1 (count coord)) (string? (first coord))))
+(defn hyperplane? [coord] (and (map? coord) (contains? coord :hyperplane)))
 (defn coord-key [coord] (js/JSON.stringify (clj->js coord)))
-(defn key-coord [key] (vec (js->clj (js/JSON.parse key))))
-(defn coord-label [coord] (if (named? coord) (str "$\"" (first coord) "\"") (coord-key coord)))
+(defn key-coord [key] (js->clj (js/JSON.parse key) :keywordize-keys true))
+(defn coord-label [coord]
+  (cond (named? coord) (str "$\"" (first coord) "\"")
+        (hyperplane? coord) (str "$$(" (str/join "," (:hyperplane coord)) ")")
+        :else (coord-key coord)))
+
+(defn resolve-dimension [doc dimension]
+  (let [d (if (string? dimension)
+            (first (keep (fn [[d alias]] (when (= alias dimension) d)) (:aliases doc))) dimension)]
+    (when-not (and (safe-integer? d) (<= 0 d (:dimensions doc)))
+      (fail (str "Unknown axis: " dimension)))
+    d))
+(defn axis-label [doc d] (or (get (:aliases doc) d) (if (zero? d) "∅ null" (str "D" d))))
+(defn hyperplane-coord [doc dimension coordinate]
+  (normalize-coord (:dimensions doc) {:hyperplane [(resolve-dimension doc dimension) coordinate]}))
+(defn target-label [doc coord]
+  (if (hyperplane? coord)
+    (let [[d c] (:hyperplane coord)] (str (axis-label doc d) "(" c ")")) (coord-label coord)))
+(defn validate-aliases! [doc aliases]
+  (when-not (and (map? aliases)
+                (every? (fn [[d alias]] (and (safe-integer? d) (<= 1 d (:dimensions doc))
+                                           (string? alias) (not (str/blank? alias)) (<= (count alias) 80))) aliases)
+                (= (count aliases) (count (set (vals aliases)))))
+    (fail "Axis aliases must be unique, non-empty names (up to 80 characters)."))
+  aliases)
+(defn set-aliases [doc aliases] (assoc doc :aliases (validate-aliases! doc aliases)))
+(defn full-axis-queue [doc]
+  (let [leading (or (seq (get-in doc [:view :axes])) (get-in doc [:view :mapping]))
+        queue (vec (distinct (filter #(and (safe-integer? %) (<= 0 % (:dimensions doc)))
+                                     (concat leading (get-in doc [:view :axis-order]) (get-in doc [:view :expelled])
+                                             (range 1 (inc (:dimensions doc))) [0]))))]
+    ;; Plane supports two null slots; volumes use the distinct prefix. Preserve
+    ;; this explicit degenerate plane without dropping any actual dimension.
+    (if (and (pos? (:dimensions doc)) (= [0 0] (vec (take 2 leading))))
+      (into [0] queue) queue)))
 
 (defn cell-at [doc coord]
   (let [c (normalize-coord (:dimensions doc) coord)]
-    (if (named? c) (get (:named doc) (first c)) (get (:cells doc) (coord-key c)))))
+    (cond (hyperplane? c) (get (:hyperplanes doc) (coord-key (:hyperplane c)))
+          (named? c) (get (:named doc) (first c)) :else (get (:cells doc) (coord-key c)))))
 
 (defn put-cell [doc coord cell]
   (let [c (normalize-coord (:dimensions doc) coord)
-        path (if (named? c) [:named (first c)] [:cells (coord-key c)])]
+        path (cond (hyperplane? c) [:hyperplanes (coord-key (:hyperplane c))]
+                   (named? c) [:named (first c)] :else [:cells (coord-key c)])]
     (if cell (assoc-in doc path cell) (update-in doc (butlast path) dissoc (last path)))))
 
 (defn switch-dimension [[x y] d]
@@ -52,7 +95,7 @@
        :end (mapv #(apply max %) (apply map vector coords))})))
 
 (defn active? [bounds coord]
-  (or (named? coord)
+  (or (named? coord) (hyperplane? coord)
       (and bounds (every? true? (map <= (:start bounds) coord (:end bounds))))))
 
 (defn block-shape [origin current]
@@ -65,6 +108,7 @@
 
 (defn in-block? [origin current coord]
   (and (not (named? origin)) (not (named? current)) (not (named? coord))
+       (not-any? hyperplane? [origin current coord])
        (= (count origin) (count current) (count coord))
        (every? true? (map #(<= (min %1 %2) %3 (max %1 %2)) origin current coord))))
 
@@ -78,16 +122,26 @@
                    (conj prefix value))))
           [[]] (map vector origin current)))
 
-(defn compile-expression [source read-cell]
+(defn expression-source [source]
+  ;; Persist the original shorthand, not its expansion.
+  (str/replace source #"^\s*=>" "() =>"))
+(defn expression-factory [source]
   (when (str/blank? source) (fail "Enter a JavaScript expression."))
-  ((js/Function. "$" (str "\"use strict\"; return (" source "\n);")) read-cell))
+  (js/Function. "$" "$$" "_" (str "\"use strict\"; return (" (expression-source source) "\n);")))
+(defn compile-expression
+  ([source read-cell] (compile-expression source read-cell nil nil))
+  ([source read-cell read-hyperplane current] ((expression-factory source) read-cell read-hyperplane current)))
+(defonce coordinate-brand (js/Symbol "ndcalc.coordinate"))
+(defn coordinate-object? [v]
+  (and (some? v) (= "object" (js* "typeof ~{}" v)) (some? (aget v coordinate-brand))))
+(defn coordinate-target [v] (aget v coordinate-brand))
 
 (defn validate-cell! [cell]
   ;; Parsing only: do not execute user code during validation.
   (when-not (#{"value" "formula"} (:kind cell)) (fail "Choose value or formula explicitly."))
   (when-not (string? (:source cell)) (fail "A cell must have JavaScript source."))
   (when (str/blank? (:source cell)) (fail "Enter a JavaScript expression."))
-  (js/Function. "$" (str "\"use strict\"; return (" (:source cell) "\n);"))
+  (expression-factory (:source cell))
   cell)
 
 (defn stringify [v]
@@ -119,12 +173,63 @@
         bounds (active-bounds doc)
         rules (mapv (fn [rule]
                       (if-not (:enabled rule) rule
-                        (try (assoc rule
-                                    :coord-fn (compile-expression (:coord rule) nil)
-                                    :value-fn (compile-expression (:value rule) nil))
-                             (catch :default e (assoc rule :error (.-message e))))))
-                    (:rules doc))]
-    (letfn [(read-value [coord]
+                        (try (assoc rule :coord-factory (expression-factory (:coord rule))
+                                         :value-factory (expression-factory (:value rule)))
+                             (catch :default err (assoc rule :error (.-message err)))))) (:rules doc))]
+    (letfn [(position [target dimension]
+              (cond (zero? dimension) 0
+                    (hyperplane? target) (let [[d c] (:hyperplane target)]
+                                          (if (= d dimension) c (fail "A hyperplane has no fixed coordinate on another axis.")))
+                    (named? target) (fail "Named cells have no axis coordinates.")
+                    :else (axis-value target dimension)))
+            (coordinate-object [target]
+              (let [object (js/Object.create nil)]
+                (aset object coordinate-brand target)
+                (aset object "kind" (cond (hyperplane? target) "hyperplane" (named? target) "named" :else "cell"))
+                (when (hyperplane? target) (aset object "dimension" (first (:hyperplane target))))
+                (let [coordinates (clj->js target)]
+                  (when (hyperplane? target) (js/Object.freeze (aget coordinates "hyperplane")))
+                  (aset object "coords" (js/Object.freeze coordinates)))
+                (aset object "coordinate" (fn [dimension] (position target (resolve-dimension doc dimension))))
+                (aset object "offset" (fn [dimension delta]
+                                        (when-not (safe-integer? delta) (fail "Offsets must be safe integers."))
+                                        (let [d (resolve-dimension doc dimension)
+                                              c (+ (position target d) (if (zero? d) 0 delta))
+                                              next (cond (zero? d) target
+                                                         (hyperplane? target) (hyperplane-coord doc d c)
+                                                         :else (set-axis target d c))]
+                                          (coordinate-object (normalize-coord (:dimensions doc) next)))))
+                (aset object "value" (fn [& dimensions]
+                                       (when (> (count dimensions) 1) (fail "value() accepts zero or one axis."))
+                                       (read-value (if (seq dimensions)
+                                                     (let [d (resolve-dimension doc (first dimensions))]
+                                                       (hyperplane-coord doc d (position target d))) target))))
+                (aset object "toJSON" (fn [] (clj->js target)))
+                (js/Object.freeze object)))
+            (context [target]
+              (let [current (coordinate-object target)
+                    dollar (fn [& args]
+                             (let [one (first args)]
+                               (read-value (cond (and (= 1 (count args)) (coordinate-object? one)) (coordinate-target one)
+                                                 (and (= 1 (count args)) (js/Array.isArray one)) (vec (array-seq one))
+                                                 :else args))))
+                    hyper (fn [dimension & coordinates]
+                            (when (> (count coordinates) 1) (fail "$$ accepts an axis and one coordinate."))
+                            (let [d (resolve-dimension doc dimension)
+                                  c (if (seq coordinates) (first coordinates) current)
+                                  c (if (coordinate-object? c) (position (coordinate-target c) d) c)]
+                              (read-value (hyperplane-coord doc d c))))
+                    ;; An arrow target has no non-configurable caller/prototype
+                    ;; properties, so aliases such as 'name' and '__proto__' work.
+                    callable (js* "((f) => (...args) => f(...args))(~{})" hyper)
+                    proxy (js/Proxy. callable
+                                    #js {:get (fn [target property receiver]
+                                                (if (and (string? property)
+                                                         (some #{property} (vals (:aliases doc))))
+                                                  (hyper property current)
+                                                  (js/Reflect.get target property receiver)))})]
+                #js [dollar proxy current]))
+            (read-value [coord]
               (let [coord (normalize-coord (:dimensions doc) coord)
                     key (coord-key coord) cell (cell-at doc coord)]
                 (when-let [parent (peek @stack)]
@@ -140,10 +245,10 @@
                           (let [result
                                 (try
                                   (if cell
-                                    (let [value (compile-expression (:source cell) (fn [& args] (read-value args)))]
+                                    (let [value (.apply (expression-factory (:source cell)) nil (context coord))]
                                       (if (= "formula" (:kind cell))
                                         (do (when-not (fn? value) (fail "Formula source must evaluate to a function."))
-                                            {:value (.apply value nil (clj->js coord))})
+                                            {:value (.apply value nil (clj->js (if (hyperplane? coord) (:hyperplane coord) coord)))})
                                         {:value value}))
                                     {:value js/undefined})
                                   (catch :default e {:error (or (.-message e) (str e))})
@@ -158,6 +263,7 @@
               (try {:value (read-value coord)}
                    (catch :default e {:error (.-message e)})))
             (format-cell [coord result]
+              (reset! calls 0)
               (let [coord (normalize-coord (:dimensions doc) coord)
                     empty-format {:classes [] :style "" :errors []}]
                 ;; Named cells remain eligible; numeric cells use the full hypercube.
@@ -167,12 +273,14 @@
                   (if-not (:enabled rule) acc
                     (try
                       (when-let [error (:error rule)] (fail error))
-                      (when-not (and (fn? (:coord-fn rule)) (fn? (:value-fn rule)))
-                        (fail "Both formatting predicates must be functions."))
-                      (if (.apply (:coord-fn rule) nil (clj->js coord))
-                        ;; Value predicates are never run when the coordinate doesn't match.
+                      (let [ctx (context coord) predicate (.apply (:coord-factory rule) nil ctx)]
+                        (when-not (fn? predicate) (fail "Coordinate predicate must be a function."))
+                        (if (.apply predicate nil (if (hyperplane? coord) #js [(aget ctx 2)] (clj->js coord)))
+                        ;; Value predicates are never constructed/run when coordinates don't match.
                         (if (:error result) acc
-                          (let [style ((:value-fn rule) (:value result))]
+                          (let [value-fn (.apply (:value-factory rule) nil ctx)
+                                _ (when-not (fn? value-fn) (fail "Value predicate must be a function."))
+                                style (value-fn (:value result))]
                             (cond
                               (js/Array.isArray style)
                               (do (when-not (every? string? (array-seq style))
@@ -180,31 +288,37 @@
                                   (update acc :classes into (array-seq style)))
                               (string? style) (update acc :style str style ";")
                               :else (fail "Formatting must return an array of classes or a CSS style string."))))
-                        acc)
+                        acc))
                       (catch :default e
                         (update acc :errors conj (str (:name rule) ": " (.-message e)))))))
                 empty-format rules))))]
-      {:evaluate evaluate :format format-cell :dependencies dependencies :rules rules :cache cache})))
+      {:doc doc :evaluate evaluate :format format-cell :dependencies dependencies :rules rules :cache cache})))
 
 (defn resize-dimensions [doc n]
   (when-not (and (safe-integer? n) (<= 0 n 32)) (fail "Choose 0–32 dimensions."))
   (when (some (fn [key] (some #(not= 0 %) (drop n (key-coord key)))) (keys (:cells doc)))
     (fail "Cannot remove dimensions with non-zero populated coordinates. Clear those cells first."))
-  (assoc doc :dimensions n
-         :cells (into {} (map (fn [[key cell]] [(coord-key (normalize-coord n (key-coord key))) cell]) (:cells doc)))
-         :view {:coord (normalize-coord n (take n (get-in doc [:view :coord])))
-                :mapping (initial-mapping n)
-                :axis-order (vec (filter #(<= % n) (get-in doc [:view :axis-order])))
-                :expelled (vec (filter #(<= % n) (get-in doc [:view :expelled])))}))
+  (when (some #(> (first (key-coord %)) n) (keys (:hyperplanes doc)))
+    (fail "Cannot remove dimensions with populated hyperplane cells. Clear their headers first."))
+  (let [doc (assoc doc :dimensions n
+                  :aliases (into {} (filter #(<= (key %) n) (:aliases doc)))
+                  :cells (into {} (map (fn [[key cell]] [(coord-key (normalize-coord n (key-coord key))) cell]) (:cells doc))))
+        queue (full-axis-queue doc)]
+    (assoc doc :view {:coord (normalize-coord n (take n (get-in doc [:view :coord])))
+                     :axes queue :mapping (vec (take 2 (concat queue [0])))
+                     :axis-order (vec (filter #(<= % n) (get-in doc [:view :axis-order])))
+                     :expelled (vec (filter #(<= % n) (get-in doc [:view :expelled])))})))
 
 (defn document->json [doc]
   ;; Null-prototype dictionaries preserve legal names such as "__proto__".
-  (let [payload (clj->js (assoc (dissoc doc :cells :named) :format "ndcalc" :version 1))
-        cells (js/Object.create nil) named (js/Object.create nil)]
+  (let [payload (clj->js (assoc (dissoc doc :cells :named :hyperplanes) :format "ndcalc" :version 1))
+        cells (js/Object.create nil) named (js/Object.create nil) hyperplanes (js/Object.create nil)]
     (doseq [[key cell] (:cells doc)] (aset cells key (clj->js cell)))
     (doseq [[name cell] (:named doc)] (aset named name (clj->js cell)))
+    (doseq [[key cell] (:hyperplanes doc)] (aset hyperplanes key (clj->js cell)))
     (aset payload "cells" cells)
     (aset payload "named" named)
+    (aset payload "hyperplanes" hyperplanes)
     (js/JSON.stringify payload nil 2)))
 
 (defn js-dictionary->map [object]
@@ -213,24 +327,40 @@
              (not (js/Array.isArray object)))
     (into {} (map (fn [key] [key (js->clj (aget object key))]) (js/Object.keys object)))))
 
+(defn decode-aliases [object]
+  (let [aliases (if (some? object) (js-dictionary->map object) {})]
+    (when-not (map? aliases) (fail "Invalid axis aliases."))
+    (into {} (map (fn [[key alias]]
+                    (let [d (js/Number key)]
+                      (when-not (and (safe-integer? d) (= key (str d))) (fail "Invalid alias dimension."))
+                      [d alias])) aliases))))
+
 (defn json->document [text]
   (let [doc (js->clj (js/JSON.parse text) :keywordize-keys true)
         ;; Cell coordinate keys and named-cell names must remain strings, not keywords.
         raw (js/JSON.parse text)
         cells (js-dictionary->map (.-cells raw)) named (js-dictionary->map (.-named raw))
-        n (:dimensions doc)]
+        hyperplanes (if (some? (.-hyperplanes raw)) (js-dictionary->map (.-hyperplanes raw)) {})
+        n (:dimensions doc) aliases (decode-aliases (.-aliases raw))]
     (when-not (and (= "ndcalc" (:format doc)) (= 1 (:version doc)))
       (fail "Not an ndcalc v1 document."))
     (when-not (and (safe-integer? n) (<= 0 n 32)) (fail "Invalid dimension count (0–32)."))
-    (when-not (and (map? cells) (map? named) (vector? (:rules doc))
+    (validate-aliases! doc aliases)
+    (when-not (and (map? cells) (map? named) (map? hyperplanes) (vector? (:rules doc))
                    (string? (:css doc)) (string? (:title doc)))
       (fail "Invalid document structure."))
     (let [convert (fn [cell] (validate-cell! {:kind (get cell "kind") :source (get cell "source")}))
           normalized (reduce (fn [acc [key cell]]
                                (let [coord (normalize-coord n (key-coord key)) k (coord-key coord)]
-                                 (when (named? coord) (fail "Named cells belong in the named section."))
+                                 (when (or (named? coord) (hyperplane? coord))
+                                   (fail "Only numeric coordinate arrays belong in cells."))
                                  (when (contains? acc k) (fail "Duplicate coordinate aliases in import."))
                                  (assoc acc k (convert cell)))) {} cells)
+          headers (reduce (fn [acc [key cell]]
+                            (let [coord (normalize-coord n {:hyperplane (key-coord key)})
+                                  k (coord-key (:hyperplane coord))]
+                              (when (contains? acc k) (fail "Duplicate hyperplane aliases in import."))
+                              (assoc acc k (convert cell)))) {} hyperplanes)
           names (into {} (map (fn [[name cell]]
                                (normalize-coord n [name]) [name (convert cell)]) named))
           rules (mapv (fn [rule]
@@ -244,8 +374,9 @@
           coord (normalize-coord n (or (:coord view) []))
           mapping (or (:mapping view) (initial-mapping n))
           expelled (or (:expelled view) [])
-          axis-order (or (:axis-order view) [])]
-      (when (or (named? coord) (not= 2 (count mapping))
+          axis-order (or (:axis-order view) [])
+          axes (:axes view)]
+      (when (or (named? coord) (hyperplane? coord) (not (vector? mapping)) (not= 2 (count mapping))
                 (not (every? #(and (safe-integer? %) (<= 0 % n)) mapping))
                 (and (pos? (first mapping)) (= (first mapping) (second mapping))))
         (fail "Invalid saved view."))
@@ -255,7 +386,16 @@
       (when-not (and (vector? axis-order) (= (count axis-order) (count (set axis-order)))
                     (every? #(and (safe-integer? %) (<= 0 % n)) axis-order))
         (fail "Invalid axis recency order."))
-      {:id (str (random-uuid)) :title (:title doc) :dimensions n
-       :cells normalized :named names :rules rules :css (:css doc)
-       :createdAt (.now js/Date) :updatedAt (.now js/Date)
-       :view {:coord coord :mapping mapping :expelled expelled :axis-order axis-order}})))
+      (when (and (some? axes)
+                 (not (and (vector? axes)
+                           (= (count (remove zero? axes)) (count (set (remove zero? axes))))
+                           (or (<= (count (filter zero? axes)) 1)
+                               (and (= 2 (count (filter zero? axes))) (= [0 0] (vec (take 2 axes)))))
+                           (every? #(and (safe-integer? %) (<= 0 % n)) axes))))
+        (fail "Invalid full axis queue."))
+      (let [queue (full-axis-queue (assoc doc :view (assoc view :mapping mapping)))]
+        {:id (str (random-uuid)) :title (:title doc) :dimensions n
+         :cells normalized :named names :hyperplanes headers :aliases aliases :rules rules :css (:css doc)
+         :createdAt (.now js/Date) :updatedAt (.now js/Date)
+         :view {:coord coord :mapping (vec (take 2 (concat queue [0]))) :axes queue
+                :expelled expelled :axis-order axis-order}}))))

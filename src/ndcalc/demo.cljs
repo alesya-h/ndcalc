@@ -7,7 +7,7 @@
 (defn blank-document [title dimensions]
   {:id (str (random-uuid)) :title title :dimensions dimensions
    :createdAt (.now js/Date) :updatedAt (.now js/Date)
-   :cells {} :named {} :rules [] :css default-css
+   :cells {} :named {} :hyperplanes {} :aliases {} :rules [] :css default-css
    :view {:coord (vec (repeat dimensions 0)) :mapping (e/initial-mapping dimensions)}})
 
 (defn color-document []

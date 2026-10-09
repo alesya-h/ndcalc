@@ -51,7 +51,7 @@ A 0D table exposes exactly one numeric cell, `[]`. A 1D table starts as a row. M
 In the modal editor, select **Value** or **Formula**. The type is never guessed from source.
 
 - **Value:** any JavaScript expression: `42`, `"text"`, `{answer: 42}`, `123n`, `new Map([["x", 1]])`, or `x => x * 2`.
-- **Formula:** an expression evaluating to a JavaScript function. Numeric cells receive their full padded coordinates as spread arguments; named cells receive their name as the only argument.
+- **Formula:** a JavaScript function, or `=> expression` shorthand for `() => expression`. Numeric cells receive their full padded coordinates as spread arguments; named cells receive their name; hyperplane cells receive `(dimension, coordinate)`. The original source is preserved.
 
 ```js
 (a,b,...rest) => $(a,b+1,...rest) + 1
@@ -64,6 +64,31 @@ New numeric formulas are prefilled with one named argument per table dimension (
 A function stored as **Value** is not called automatically. A formula can explicitly call it: `() => $("as_function")(21)`.
 
 Display uses stringification: text as-is, JSON for objects/arrays, source for functions, and readable fallbacks for BigInt, symbols, maps, sets, or circular objects. Empty cells display blank; an explicitly stored `undefined` displays `undefined`. React renders these as text, not HTML.
+
+### Axis aliases, hyperplane values, and coordinate objects
+
+**Dimensions → Axis aliases** assigns optional unique names (up to 80 characters), such as `date` or `department`. Aliases appear in chips, selectors, slice inputs, and preview headers instead of dimension numbers. Numeric dimension IDs still work in formulas; aliases are case-sensitive. Renaming an alias does not rewrite existing JavaScript—update references using its old name.
+
+A **hyperplane cell** belongs to one `(dimension, coordinate)` pair and is shared across all other dimensions. Use it for dates, department names, units, rates, or other axis-associated values. Each grid has **two horizontal header rows and two vertical header columns**: raw coordinates, then their computed hyperplane values, then ordinary cells. 4D also has these paired headers for outer Z/W slices. Click a value header to edit; focused headers support Enter/i, Shift+Enter/I for Formula, and Delete/Backspace to clear. In 3D Stack, headers remain clickable while dragging ordinary cells rotates the camera.
+
+Hyperplane cells have explicit Value/Formula types, accept arbitrary JavaScript values, participate in dependency tracking/cycle detection and undo, and persist with the table. Missing values return `undefined`. They do **not** expand numeric populated bounds; removing a dimension with populated hyperplane cells is refused. The null axis supports only coordinate zero.
+
+`_` is an **immutable coordinate object bound to the cell being evaluated**, independent of the current view. `offset(axis, amount)` returns a new coordinate without moving the UI; aliases or actual dimension numbers identify axes, not navigation slots. `value()` fetches that cell; `value(axis)` fetches its hyperplane value. `coordinate(axis)` returns the raw signed coordinate, and `coords` exposes the immutable coordinate data.
+
+```js
+=> $(_.offset("date", -1)) + 1
+=> _.offset(3, 15).value() + 1
+=> $$(1, 42)
+=> $$("department", 42)
+=> $$("department", _)
+=> _.value("department")
+=> $$["department"]
+=> $$.department
+```
+
+`$$.alias` / `$$["alias"]` implicitly read the hyperplane value at `_`'s coordinate on that axis. Bracket syntax supports names containing spaces. `$(coordinateObject)` reads an ordinary or hyperplane target just like `.value()`. Hyperplane coordinate objects may offset their own axis; they have no fixed position on other axes. Named cells likewise have no numeric axis coordinates. Offset amounts and results must stay within safe-integer bounds; null offsets do not move.
+
+Formatting functions also receive the bound `_`, `$`, and `$$`. `_.kind` is `"cell"`, `"named"`, or `"hyperplane"`; hyperplane objects additionally have `.dimension`. Their coordinate predicate receives this coordinate object as its single argument, rather than masquerading as ordinary X/Y coordinates. For example, `() => _.kind === "hyperplane"` styles all value headers.
 
 Formulas are synchronous and demand-evaluated. Each content revision has a memoized dependency graph; edits invalidate it, including conditional dependencies and named references. Circular references and evaluation errors appear in cells without breaking the table. There are guards for dependency depth and cell-evaluation count per root calculation, rather than per browsing session. Missing coordinates do not accumulate cache entries as you navigate. Prefer pure, deterministic functions. Promises are ordinary values, not awaited spreadsheet calculations.
 
@@ -92,7 +117,7 @@ start       (1,2)
 
 The full current coordinate never changes when remapping. Arrow keys move along the mapped axes; inactive dimensions stay fixed. Dimension chips above the table show X/Y/Z/W or hidden navigation-slot status and let you change any slice coordinate. Axis dropdowns support dimensions beyond the 1–9 shortcuts.
 
-The **active area** is the componentwise minimum/maximum of populated numeric coordinates across the entire hypertable. Named cells do not expand it. Outside this box, cells are dimmed but fully navigable/editable. The grid renders a bounded, responsive window rather than allocating a dense hypertable.
+The **active area** is the componentwise minimum/maximum of populated numeric coordinates across the entire hypertable. Named and hyperplane cells do not expand it. Outside this box, cells are dimmed but fully navigable/editable. The grid renders a bounded, responsive window rather than allocating a dense hypertable.
 
 The **3D view** is editable and configurable:
 
@@ -102,17 +127,17 @@ The **3D view** is editable and configurable:
 - **Slices** displays individually readable, scrollable grids without overlapping planes. Click to select or double-click to edit without leaving 3D. **Labels** toggles values/coordinates; without labels, formatting fills each cell for a clearer color-volume view.
 - Arrows navigate X/Y; **PgUp/PgDn** and **Z − / Z +** move Z. **Enter/i** (regular edit) or **Shift+Enter/I** (Formula), the Edit button, and the source bar open the cell editor directly in 3D. Visual selection/fill, clear, copy/paste, undo/redo, named cells, formatting rules, and CSS all work without switching to the plane. **Open in plane** is optional. Hover for the full value and source.
 
-3D maintains a distinct **X/Y/Z dimension queue**. Pressing a dimension key or chip removes that dimension from its existing position and appends it to the end; a new dimension drops the oldest. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is allowed in every view**: the null axis stays at coordinate zero, one cell deep, with its size control disabled. It cannot be stepped along. Selecting it does not change view mode. Axis dropdowns explicitly assign an axis, swapping with an existing axis if necessary. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed.
+All views share a persisted **full axis queue containing every existing dimension and null**. Plane reveals its first two axes, 3D its first three, and 4D its first four; the rest stay available for hidden-axis navigation. Changing view never rebuilds or truncates this queue, so a chosen W survives 4D → 3D → Plane → 4D. 3D uses the queue's **X/Y/Z prefix**. In a volume, pressing a dimension key or chip removes it from the visible prefix and appends it to that prefix; an incoming hidden dimension displaces the oldest visible axis into the hidden tail. No dimension is discarded from the full queue. For example, `[1,2,3]` → `1` → `[2,3,1]` → `4` → `[3,1,4]` → `1` → `[3,4,1]`. Repeating the last dimension does nothing. **0 is allowed in every view**: the null axis stays at coordinate zero, one cell deep, with its size control disabled. It cannot be stepped along. Selecting it does not change view mode. Axis dropdowns swap positions across the full queue, including hidden axes. The coordinate, visual anchor, and mode are preserved. X/Y stays synchronized with the plane, and fitting bounds refits after remapping or editing. Other dimensions remain fixed. The legacy Plane `(0,0)` case retains two null slots; volumes skip its duplicate null slot while still preserving all real dimensions.
 
 `t` cycles **Plane → 3D → 4D → Plane**, skipping views without enough distinct available dimensions (including null). 3D therefore needs at least two numeric dimensions and 4D at least three. Existing null axes are preserved. Resizing below the minimum returns to the plane. Computed values, selection highlighting, and active-hypercube formatting are shared by all views. Use Stack/Slices buttons for the 3D layout. **Ctrl+t and Ctrl+Shift+t are not intercepted**, leaving browser tab shortcuts intact.
 
-Scroll over the 3D/4D canvas to zoom; in 3D, Ctrl+scroll adjusts layer gap and Shift+scroll adjusts stack transparency. Native non-passive wheel handlers prevent browser zoom over the preview; scrolling elsewhere behaves normally. `f` toggles Follow cell, `F` fits active bounds, and `l` toggles Labels in either volume view.
+Ordinary scroll/trackpad gestures **pan horizontally and vertically**, including a scrollable 3D Stack canvas. **Alt+scroll zooms** in 3D/4D. In 3D, Ctrl+scroll adjusts layer gap; Shift+scroll adjusts transparency only in Stack (it remains available for native horizontal panning in Slices/4D). Only handled modifier gestures prevent default browser behavior. `f` toggles Follow cell, `F` fits active bounds, and `l` toggles Labels in either volume view.
 
 Home → **Open OKLCH vs LCH** creates 1,024 coordinate formulas over an 8×8×8×2 table. D1/D2/D3 select lightness/chroma/hue; **D4 chooses OKLCH or CIELCH (D50)**. In 4D the spaces appear side by side, with hue slices vertically. Chroma uses each space's own scale (OKLCH 0–0.35, LCH 0–131.25), not equal colorimetric values; out-of-sRGB colors are browser gamut-mapped.
 
-The **4D view** (4D button or the second `t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, wheel zoom, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys use a four-element queue, including `0` as a one-cell null axis.
+The **4D view** (4D button or the second `t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, wheel zoom, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys operate on the four-element prefix of the same full queue, including `0` as a one-cell null axis.
 
-Higher-axis navigation uses **logical navigation slots**, not hardcoded dimension numbers. The visible X/Y/Z/W axes come first, followed by hidden dimensions in a **global recency order**. Newly expelled dimensions move to the front of that history. Active dimensions retain their place in the history, and switching Plane/3D/4D does not rewrite it: hidden ordering is independent of view. Previously unused dimensions start in numeric order, with null last. In the plane, PgUp/PgDn therefore moves the last expelled axis (or D3 before any expulsion). `Ctrl+Up/Down` does the same; `Ctrl+Left/Right` moves slot 4, Alt moves slots 5/6, and Ctrl+Alt slots 7/8. Up/PageUp/Right increments; Down/PageDown/Left decrements. Shift starts or extends an n-dimensional selection with every movement. Hidden chips show `nav3`…`nav8` to identify these bindings. Missing slots report a message without moving.
+Higher-axis navigation uses **logical navigation slots**, not hardcoded dimension numbers. Slots are positions in the **same full axis queue** in every view; visible axes are its prefix and hidden axes its tail. The queue initially follows dimension-number order, with null last. In the plane, PgUp/PgDn moves slot 3; leaving 4D does not shuffle W or any hidden axis. `Ctrl+Up/Down` does the same; `Ctrl+Left/Right` moves slot 4, Alt moves slots 5/6, and Ctrl+Alt slots 7/8. Up/PageUp/Right increments; Down/PageDown/Left decrements. Shift starts or extends an n-dimensional selection with every movement. Hidden chips show `nav3`…`nav8` to identify these bindings. Missing slots report a message without moving.
 
 `Home`/`End` in the plane go to the first/last **populated cell in the current row**, respecting mapped axes and every fixed coordinate. Other rows and slices do not affect the endpoints; an empty row does not move. Shift+Home/End extends selection. These keys do not change coordinates in 3D or 4D.
 
@@ -120,7 +145,7 @@ Changing the dimension count is supported. Removing a dimension is refused if an
 
 ## Example hypertables
 
-Opening an example creates a **fresh saved copy**, leaving existing tables untouched. The Named cells panel supplies axis legends, units, assumptions, and editable inputs. All data is synthetic and models are deliberately simplified.
+Opening an example creates a **fresh saved copy**, leaving existing tables untouched. The Named cells panel supplies units, assumptions, and editable inputs; aliased hyperplane headers display physical coordinates, dates, department/product names, and metrics. Heat diffusion, membrane modes, beam design, and art formulas use header values through `$$` / `_.value(...)`, so changing a header recalculates results. All data is synthetic and models are deliberately simplified.
 
 | Example | Shape / subject | Formatting |
 |---|---|---|
@@ -157,7 +182,8 @@ Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no h
 | Shift+Enter / `I` | Edit as a formula |
 | `f` / `F` | Toggle Follow cell / fit active bounds (3D/4D) |
 | `l` | Toggle Labels (3D/4D) |
-| Scroll | Zoom (3D/4D) |
+| Scroll | Pan horizontally / vertically (3D/4D) |
+| Alt+Scroll | Zoom (3D/4D) |
 | Ctrl+Scroll / Shift+Scroll | Layer gap / stack transparency (3D) |
 | `v` / Ctrl+V | Toggle n-dimensional visual selection |
 | Shift+arrows / Shift+click | Extend selection |
@@ -190,7 +216,7 @@ The right inspector has **Named cells**, **Rules**, and **CSS** tabs.
 Rules are an ordered list of two JavaScript functions:
 
 ```js
-// Coordinate predicate: spread numeric coordinates, or a single named string.
+// Coordinate predicate: numeric coordinates, a named string, or a hyperplane object.
 (x,y,...rest) => typeof x === "number" && y === 0
 name => name === "my_named_cell"
 
@@ -207,13 +233,13 @@ At render time the coordinate predicate runs first. Only a match invokes the val
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and global axis-recency history—automatically saves to **IndexedDB**. Theme choice (**System**, Light, Dark) and 3D/4D size/layout/labels/camera preferences, including stack transparency and mouse-adjusted angles, are also stored there. **System is the default**, tracks `prefers-color-scheme` live, and follows OS changes only while selected. Light/Dark overrides stay fixed. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and full shared axis queue, aliases, and hyperplane cells—automatically saves to **IndexedDB**. Theme choice (**System**, Light, Dark) and 3D/4D size/layout/labels/camera preferences, including stack transparency and mouse-adjusted angles, are also stored there. **System is the default**, tracks `prefers-color-scheme` live, and follows OS changes only while selected. Light/Dark overrides stay fixed. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 
 JSON stores **source**, not computed values. This preserves function-valued cells and expressions producing non-JSON values. On reopen, values are reconstructed from their source; mutated runtime object identity, external closures, nondeterministic results, and async work are not serialized snapshots.
 
-The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, a `cells` dictionary keyed by canonical coordinate JSON, a `named` dictionary, `rules`, `css`, and `view`.
+The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, `cells` keyed by canonical numeric coordinate JSON, `named`, `rules`, `css`, and `view`. Optional `aliases` maps numeric dimension keys to names; `hyperplanes` maps `[dimension, coordinate]` JSON keys to source-backed cell records; `view.axes` holds the full queue. Older documents without these fields remain supported and migrate their saved mapping/recency into the queue.
 
 ### Trust boundary
 
@@ -221,7 +247,7 @@ The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, 
 
 ## Layout
 
-- `src/ndcalc/engine.cljs` — coordinates, sparse cells, evaluation, formatting, JSON validation.
+- `src/ndcalc/engine.cljs` — coordinates, aliases, hyperplane cells, coordinate objects, evaluation, formatting, JSON validation.
 - `src/ndcalc/state.cljs` — modal commands, selection, undo, clipboard, persistence orchestration.
 - `src/ndcalc/storage.cljs` — IndexedDB transactions and preferences.
 - `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview and 4D slice matrix.

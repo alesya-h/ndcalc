@@ -11,12 +11,35 @@
   (if (empty? shape) [[]]
     (for [tail (tensor-coords (rest shape)) x (range (first shape))] (into [x] tail))))
 
+(def axis-specs
+  {"Heat diffusion" [["x" "(d,c) => +((c-3.5)*$(\"dx\")).toFixed(3)"]
+                     ["y" "(d,c) => +((c-3.5)*$(\"dx\")).toFixed(3)"]
+                     ["time" "(d,c) => c*$(\"dt\")"] ["material" "(d,c) => $(\"materials\")[c]"]]
+   "Membrane eigenmodes" [["x" "(d,c) => c/7"] ["y" "(d,c) => c/7"]
+                         ["mx" "(d,c) => c+1"] ["my" "(d,c) => c+1"]]
+   "Product scenario planning" [["date" "(d,c) => `2026-${String(c+1).padStart(2,'0')}`"]
+                                ["product" "(d,c) => $(\"products\")[c]"] ["region" "(d,c) => $(\"regions\")[c]"]
+                                ["scenario" "(d,c) => $(\"scenarios\")[c]"] ["metric" "(d,c) => $(\"metrics\")[c]"]]
+   "Beam design envelope" [["span" "(d,c) => 1+c*0.5"] ["load" "(d,c) => 1000*(c+1)"]
+                           ["section" "(d,c) => $(\"depth\")[c]"] ["material" "(d,c) => $(\"materials\")[c]"]
+                           ["metric" "(d,c) => $(\"metrics\")[c]"]]
+   "Double-entry ledger" [["date" "(d,c) => `2026-${String(c+1).padStart(2,'0')}`"]
+                         ["account" "(d,c) => $(\"accounts\")[c]"] ["department" "(d,c) => $(\"departments\")[c]"]
+                         ["version" "(d,c) => $(\"versions\")[c]"]]
+   "Interference atelier" [["x" "(d,c) => c-5.5"] ["y" "(d,c) => c-5.5"]
+                           ["phase" "(d,c) => c"] ["motif" "(d,c) => $(\"motifs\")[c]"]]})
+
 (defn tensor-document [title shape axes notes inputs source rules css]
   (let [doc (demo/blank-document title (count shape))
         doc (reduce #(e/put-cell %1 %2 {:kind "formula" :source source}) doc (tensor-coords shape))
         doc (reduce (fn [d [name v]] (e/put-cell d [name] (value v))) doc
                     (assoc inputs "axes" axes "notes" notes))]
-    (assoc doc :rules rules :css css)))
+    (let [specs (get axis-specs title)
+          doc (e/set-aliases doc (into {} (map-indexed (fn [i [alias _]] [(inc i) alias]) specs)))
+          doc (reduce (fn [d [i [_ source]]]
+                        (reduce (fn [d c] (e/put-cell d {:hyperplane [(inc i) c]} {:kind "formula" :source source}))
+                                d (range (nth shape i)))) doc (map-indexed vector specs))]
+      (assoc doc :rules rules :css css))))
 
 (defn heat-document []
   (tensor-document
@@ -25,7 +48,7 @@
     "Analytical 2D Gaussian heat diffusion on an infinite homogeneous plate. Temperatures in °C; diffusivity in m²/s. Synthetic parameters, not a finite-element simulation. Change the named inputs to recalculate. Formatting breathes gently with temperature."
     {"dx" 0.02 "dt" 20 "sigma" 0.035 "ambient" 20 "amplitude" 80
      "diffusivity" [0.00001 0.00004 0.00008] "materials" ["Low" "Medium" "High diffusivity"]}
-    "(x,y,t,m) => { const s0=$(\"sigma\")**2, s=s0+4*$(\"diffusivity\")[m]*t*$(\"dt\"), r2=((x-3.5)*$(\"dx\"))**2+((y-3.5)*$(\"dx\"))**2; return +($(\"ambient\")+$(\"amplitude\")*s0/s*Math.exp(-r2/s)).toFixed(2); }"
+    "(x,y,t,m) => { const s0=$(\"sigma\")**2, s=s0+4*$(\"diffusivity\")[m]*$$.time, r2=$$.x**2+$$.y**2; return +($(\"ambient\")+$(\"amplitude\")*s0/s*Math.exp(-r2/s)).toFixed(2); }"
     [(rule "Thermal map + breathing" numeric
            "v => typeof v === 'number' ? `background: oklch(72% 0.16 ${250-(v-20)*3}); color: #142030; animation: nd-thermal 4s ease-in-out infinite; animation-delay: ${-v/25}s;` : ''")]
     "@keyframes nd-thermal { 50% { filter: brightness(1.08); } }"))
@@ -36,7 +59,7 @@
     ["X / 7" "Y / 7" "X mode number − 1" "Y mode number − 1"]
     "Separable Dirichlet eigenfunctions sin((m+1)πx) sin((n+1)πy) on the unit square. Boundary amplitudes are zero. Signed, normalized amplitudes show nodal lines; D3/D4 select nine mode combinations."
     {"eigenvalue" {:description "λ = π²[(D3+1)² + (D4+1)²]"}}
-    "(x,y,m,n) => +(Math.sin((m+1)*Math.PI*x/7)*Math.sin((n+1)*Math.PI*y/7)).toFixed(4)"
+    "(x,y,m,n) => +(Math.sin($$.mx*Math.PI*$$.x)*Math.sin($$.my*Math.PI*$$.y)).toFixed(4)"
     [(rule "Signed amplitude / nodal lines" numeric
            "v => typeof v === 'number' ? `background: oklch(${92-30*Math.abs(v)}% ${0.18*Math.abs(v)} ${v<0 ? 330 : 210}); color: #17202b; box-shadow: inset 0 0 0 ${Math.abs(v)<0.001 ? 2 : 0}px #708090;` : ''")]
     ""))
@@ -67,7 +90,7 @@
     {"width" 0.04 "depth" [0.04 0.06 0.08 0.10] "E" [200000000000 70000000000 11000000000]
      "allowable" [160000000 90000000 10000000] "materials" ["Steel" "Aluminium" "Timber"]
      "metrics" ["Deflection mm" "Stress MPa" "Stress utilization %" "Serviceability utilization %"]}
-    "(s,q,h,m,k) => { const L=1+s*0.5, w=1000*(q+1), H=$(\"depth\")[h], I=$(\"width\")*H**3/12, stress=w*L**2*H/(16*I), delta=5*w*L**4/(384*$(\"E\")[m]*I); return +[1000*delta, stress/1e6, 100*stress/$(\"allowable\")[m], 100*delta/(L/360)][k].toFixed(3); }"
+    "(s,q,h,m,k) => { const L=$$.span, w=$$.load, H=_.value('section'), I=$(\"width\")*H**3/12, stress=w*L**2*H/(16*I), delta=5*w*L**4/(384*$(\"E\")[m]*I); return +[1000*delta, stress/1e6, 100*stress/$(\"allowable\")[m], 100*delta/(L/360)][k].toFixed(3); }"
     [(rule "Magnitude bars" numeric "v => typeof v==='number' ? `background:linear-gradient(90deg,var(--accent-soft) ${Math.min(100,v*4)}%,transparent 0);` : ''")
      (rule "Utilization heatmap" "(s,q,h,m,k) => k >= 2"
            "v => `background: oklch(78% 0.13 ${v>100 ? 25 : 150}); color:#17202b;`")
@@ -93,7 +116,7 @@
     ["X pixel" "Y pixel" "Phase frame" "Motif: radial / spiral / plaid"]
     "Procedural color studies with radial, spiral and plaid interference. Each formula returns an object; formatting turns its hue/lightness into conic gradients, animated hue rotation, and morphing corner shapes. Pure coordinate formulas: CSS supplies the motion, without timers or external assets. Enable Labels to inspect the objects. Reduced-motion preferences disable animations."
     {"motifs" ["Radial" "Spiral" "Plaid"] "frequency" 1.4}
-    "(x,y,t,m) => { const X=x-5.5,Y=y-5.5,r=Math.hypot(X,Y),a=Math.atan2(Y,X),p=m===0 ? r : m===1 ? r+a*2 : Math.sin(X)+Math.cos(Y); return {hue:((p*35+t*45)%360+360)%360, light:65+15*Math.sin(p*$(\"frequency\")+t), phase:(x+y)/6}; }"
+    "(x,y,t,m) => { const X=$$.x,Y=$$.y,r=Math.hypot(X,Y),a=Math.atan2(Y,X),p=m===0 ? r : m===1 ? r+a*2 : Math.sin(X)+Math.cos(Y); return {hue:((p*35+t*45)%360+360)%360, light:65+15*Math.sin(p*$(\"frequency\")+t), phase:(x+y)/6}; }"
     [(rule "Conic pigments + shape morph" numeric
            "v => v && typeof v.hue==='number' ? `background: conic-gradient(from ${v.hue}deg, oklch(${v.light}% 0.18 ${v.hue}), oklch(85% 0.10 ${(v.hue+100)%360}), oklch(${v.light}% 0.18 ${v.hue})); color:#17202b; border-radius:15%; animation:nd-art-flow 8s ease-in-out infinite alternate; animation-delay:${-v.phase}s;` : ''")]
     "@keyframes nd-art-flow {to {filter:hue-rotate(35deg) saturate(1.2);border-radius:40% 5% 40% 5%; transform:scale(0.9);}}"))
