@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "shadow-cljs watch app",
     "build": "shadow-cljs release app",
+    "build:pages": "npm run build && node scripts/build-pages.mjs",
+    "screenshots": "node scripts/screenshots.mjs",
     "test": "shadow-cljs compile test && node target/tests.js",
     "serve": "node scripts/serve.mjs",
     "test:e2e": "node scripts/browser-test.mjs",
-    "test:firefox": "node scripts/firefox-test.mjs"
+    "test:firefox": "node scripts/firefox-test.mjs",
+    "test:pages": "node scripts/pages-test.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",
