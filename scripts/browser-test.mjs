@@ -491,6 +491,10 @@ try {
     assert.equal(await page.locator('.hyper-panel').count(),4);
     assert.equal(await page.locator('.hyper-column-label').count(),2);
     assert.equal(await page.locator('.hyper-row-label').count(),2);
+    assert.deepEqual(await page.locator('.hyper-panel').evaluateAll(els=>els.map(el=>[Number(el.dataset.z),Number(el.dataset.w)])),[[0,0],[0,1],[1,0],[1,1]]);
+    assert.ok(await page.locator('.hyper-matrix').evaluate(el=>
+      el.querySelector('.hyper-panel[data-z="0"][data-w="0"]').getBoundingClientRect().top <
+      el.querySelector('.hyper-panel[data-z="1"][data-w="0"]').getBoundingClientRect().top));
     assert.equal(await page.locator('.cube-cell').count(),16);
     assert.equal((await page.locator('.cube-cell').evaluateAll(els=>new Set(els.map(el=>el.dataset.coord)).size)),16);
     assert.equal(await page.locator('.cube-current').count(),1);
@@ -617,6 +621,34 @@ try {
     await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'presentation test',exact:true})}).locator('.document-open').click();
     assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .width-dot').count(),1);
     await page.getByRole('button',{name:'ndcalc home',exact:true}).click(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+  });
+  await check('clear resets custom widths, editor reset preserves content, and width-only cells stay empty', async () => {
+    await create('reset widths',2); await edit('7'); await press('Enter');
+    await page.getByRole('spinbutton',{name:'Cell width',exact:true}).fill('280'); await press('Control+Enter');
+    const cell=page.locator('[data-coord="[0,0]"]'), empty=page.locator('[data-coord="[1,0]"]');
+    assert.equal(await cell.locator('.width-dot').count(),1);
+    await press('Enter'); await clickText('Clear custom width');
+    assert.equal(await page.getByRole('spinbutton',{name:'Cell width',exact:true}).inputValue(),'');
+    await press('Control+Enter'); await waitText([0,0],'7'); assert.equal(await cell.locator('.width-dot').count(),0);
+    await page.locator('body').click({position:{x:2,y:2}}); await press('u','Delete');
+    assert.equal(await cell.locator('.width-dot').count(),0); await waitText([0,0],'');
+    await press('u'); await waitText([0,0],'7'); assert.equal(await cell.locator('.width-dot').count(),1);
+    await go(1,0); await press('Enter');
+    await page.getByRole('spinbutton',{name:'Cell width',exact:true}).fill('300'); await press('Control+Enter');
+    await waitText([1,0],''); assert.equal(await empty.locator('.width-dot').count(),1);
+    await press('Enter'); await clickText('Clear custom width'); await press('Control+Enter');
+    await waitText([1,0],''); assert.equal(await empty.locator('.width-dot').count(),0);
+    await page.locator('body').click({position:{x:2,y:2}}); await press('u');
+    assert.equal(await empty.locator('.width-dot').count(),1);
+    await go(0,0); await press('v','ArrowRight','Delete');
+    assert.equal(await cell.locator('.width-dot').count(),0); assert.equal(await empty.locator('.width-dot').count(),0);
+    await press('u'); assert.equal(await cell.locator('.width-dot').count(),1); assert.equal(await empty.locator('.width-dot').count(),1);
+    await go(0,0); await press('H','Alt+Enter'); await page.getByRole('textbox',{name:'Cell text'}).fill('header');
+    await page.getByRole('spinbutton',{name:'Cell width',exact:true}).fill('200'); await press('Control+Enter');
+    const header=page.locator('[data-hyperplane="[1,0]"]'); assert.equal(await header.locator('.width-dot').count(),1);
+    await page.locator('body').click({position:{x:2,y:2}}); await press('Delete');
+    assert.equal(await header.locator('.width-dot').count(),0); assert.equal(await header.locator('.cell-text').textContent(),'');
+    await press('u'); assert.equal(await header.locator('.width-dot').count(),1); assert.equal(await header.locator('.cell-text').textContent(),'header');
   });
   await check('H focuses hyperrows/hypercolumns, constrains motion, fills/copies/pastes, and keeps borders visible over rules', async () => {
     await create('hyper selection',4); await edit('7'); await clickText('Rules'); await page.getByRole('button',{name:'Add formatting rule'}).click();

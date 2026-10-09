@@ -278,8 +278,11 @@
 (defn save-editor! []
   (let [{:keys [coords kind source new-name name width]} (:editor @app)]
     (try
-      (let [cell (e/validate-cell! {:kind (if (= kind "text") "value" kind)
-                                    :source (if (= kind "text") (js/JSON.stringify source) source)})
+      (let [width-only? (and (not new-name) (= kind "value") (str/blank? source)
+                            (every? #(nil? (e/cell-at (:doc @app) %)) coords))
+            cell (when-not width-only?
+                   (e/validate-cell! {:kind (if (= kind "text") "value" kind)
+                                     :source (if (= kind "text") (js/JSON.stringify source) source)}))
             coords (if new-name [[(str/trim name)]] coords)]
         (when new-name
           (e/normalize-coord (get-in @app [:doc :dimensions]) (first coords))
@@ -305,12 +308,13 @@
       (if (or (hyper-axis) (zero? dimension)) (clear!)
         (do
           (change! (fn [doc]
-                     (update doc :cells
-                             #(into {} (remove
-                                         (fn [[key _]]
-                                           (let [at (e/key-coord key)]
-                                             (every? (fn [i] (or (= (inc i) other) (= (nth at i) (nth c i))))
-                                                     (range (count c))))) %)))))
+                     (reduce (fn [d key]
+                               (let [at (e/key-coord key)]
+                                 (if (and (not (e/named? at)) (not (e/hyperplane? at))
+                                          (every? (fn [i] (or (= (inc i) other) (= (nth at i) (nth c i))))
+                                                  (range (count c))))
+                                   (e/put-cell d at nil) d)))
+                             doc (distinct (concat (keys (:cells doc)) (keys (:cell-widths doc)))))))
           (notify! (str "Cleared " (if (zero? axis) "column" "row") " at " (e/axis-value c dimension))))))))
 
 (defn jump! [axis value]

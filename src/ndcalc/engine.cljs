@@ -75,7 +75,9 @@
   (let [c (normalize-coord (:dimensions doc) coord)
         path (cond (hyperplane? c) [:hyperplanes (coord-key (:hyperplane c))]
                    (named? c) [:named (first c)] :else [:cells (coord-key c)])]
-    (if cell (assoc-in doc path cell) (update-in doc (butlast path) dissoc (last path)))))
+    (if cell (assoc-in doc path cell)
+      (cond-> (update-in doc (butlast path) dissoc (last path))
+        (:cell-widths doc) (update :cell-widths dissoc (coord-key c))))))
 
 (defn switch-dimension [[x y] d]
   (cond (= d x) [y x]

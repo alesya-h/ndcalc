@@ -478,7 +478,7 @@
        (for [at-w ws] ^{:key (str "w" at-w)} [:div.hyper-column-label (str (e/axis-label doc w) " = " at-w)])
        [:div.hyper-corner.value-corner (e/axis-label doc z)] [:div.hyper-corner.value-corner.corner-diagonal {:aria-hidden true}]
        (for [at-w ws] ^{:key (str "wv" at-w)} [:div.hyper-column-value.hyperplane-cell [hyperplane-header doc (:runtime context) w at-w :hyperrow]])
-       (for [at-z (reverse zs)]
+       (for [at-z zs]
          ^{:key at-z}
          [:<> [:div.hyper-row-label (str (e/axis-label doc z) " = " at-z)]
           [:div.hyper-row-value.hyperplane-cell [hyperplane-header doc (:runtime context) z at-z :hypercolumn]]
@@ -714,7 +714,12 @@
       [:div.cell-width-control
        [:label "Cell width " [:input {:type "number" :min 35 :max 2000 :value (or width "") :placeholder "Auto" :aria-label "Cell width"
                                       :on-change #(swap! s/app assoc-in [:editor :width] (.. % -target -value))}]]
-       [:button.button.compact {:on-click #(swap! s/app assoc-in [:editor :width] "")} "Auto"]
+       [:button.button.compact {:disabled (str/blank? (str (or width "")))
+                                :title "Restore automatic sizing when you Apply"
+                                :on-click (fn [event]
+                                            (swap! s/app assoc-in [:editor :width] "")
+                                            (when-let [input (.querySelector (.closest (.-currentTarget event) ".cell-width-control") "input")]
+                                              (.focus input)))} "Clear custom width"]
        [:span "Column width is its widest cell. Auto: square–400px."]]
       [:p.editor-note (case kind "text" "Saved as a normal JavaScript string value. Quotes, backslashes and line breaks are preserved verbatim."
                                 "formula" "Coordinates are function arguments; => expression is shorthand. $ reads cells; $$ reads axis values; _ is this coordinate. Example: => _.offset('date', -1).value() + 1"

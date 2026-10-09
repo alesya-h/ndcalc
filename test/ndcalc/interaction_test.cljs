@@ -90,6 +90,47 @@
     (doseq [width [34 2001 99.5 "100" js/NaN]] (is (thrown? js/Error (e/set-cell-width doc [0] width))))
     (is (thrown? js/Error (e/json->document (e/document->json (assoc doc :cell-widths {"[0,0,0]" -1})))))))
 
+(deftest clearing-cells-removes-widths-including-empty-headers-and-names
+  (doseq [target [[0 0] [2 0] {:hyperplane [1 3]} ["__proto__"]]]
+    (let [doc (cond-> (demo/blank-document "clear widths" 4)
+                (not= target [2 0]) (e/put-cell target (value "42")))
+          doc (e/set-cell-width doc target 275)]
+      (s/open-document! doc)
+      (cond (e/hyperplane? target) (s/focus-hyperplane! 1 3 :hyperrow false)
+            :else (s/pick-cell! target false))
+      (s/clear!)
+      (is (nil? (e/cell-at (:doc @s/app) target)))
+      (is (nil? (e/cell-width (:doc @s/app) target)))
+      (s/undo! false)
+      (is (= 275 (e/cell-width (:doc @s/app) target)))
+      (is (= (e/cell-at doc target) (e/cell-at (:doc @s/app) target))))))
+
+(deftest clearing-blocks-and-axes-removes-only-matching-widths
+  (let [doc (reduce #(e/set-cell-width %1 %2 180)
+                    (e/put-cell (demo/blank-document "clear axis" 4) [0 0] (value "42"))
+                    [[0 0] [0 3] [1 0] [0 0 1] {:hyperplane [1 0]} ["named"]])]
+    (s/open-document! doc) (s/clear-axis! 0)
+    (doseq [c [[0 0] [0 3]]]
+      (is (nil? (e/cell-width (:doc @s/app) c))))
+    (doseq [c [[1 0] [0 0 1] {:hyperplane [1 0]} ["named"]]]
+      (is (= 180 (e/cell-width (:doc @s/app) c))))
+    (s/undo! false) (is (= (:cell-widths doc) (get-in @s/app [:doc :cell-widths])))
+    (s/toggle-visual!) (s/move! 1 0 false) (s/clear!)
+    (doseq [c [[0 0] [1 0]]] (is (nil? (e/cell-width (:doc @s/app) c))))
+    (is (= 180 (e/cell-width (:doc @s/app) [0 3])))))
+
+(deftest resetting-width-only-empty-cells-does-not-create-values
+  (s/set-cell-width! [0 0] 275) (s/open-editor! nil)
+  (is (= 275 (get-in @s/app [:editor :width])))
+  (swap! s/app assoc-in [:editor :width] "") (s/save-editor!)
+  (is (nil? (:editor @s/app)))
+  (is (empty? (get-in @s/app [:doc :cells])))
+  (is (nil? (e/cell-width (:doc @s/app) [0 0])))
+  (s/undo! false) (is (= 275 (e/cell-width (:doc @s/app) [0 0])))
+  (s/open-editor! nil) (swap! s/app assoc-in [:editor :width] "125") (s/save-editor!)
+  (is (= 125 (e/cell-width (:doc @s/app) [0 0])))
+  (is (nil? (e/cell-at (:doc @s/app) [0 0]))))
+
 (deftest touch-metrics-and-bounded-zoom
   (is (= {:count 1 :x 10 :y 20 :distance 0} (gestures/metrics #js [#js {:clientX 10 :clientY 20}])))
   (is (= {:count 2 :x 50 :y 20 :distance 100} (gestures/metrics #js [#js {:clientX 0 :clientY 20} #js {:clientX 100 :clientY 20}])))
