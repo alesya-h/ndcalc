@@ -22,7 +22,13 @@ const press = async (...keys) => {
   for (const key of keys) await page.keyboard.press(key);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 };
-const clickText = label => page.getByRole('button', {name:label, exact:true}).click();
+const clickText = async label => {
+  await page.getByRole('button', {name:label, exact:true}).click(); await press();
+};
+const waitDocument = title => page.waitForFunction(title=>document.querySelector('.document-title')?.textContent===title,title);
+const reloadDocument = async title => {
+  const url=page.url(); await page.reload(); await waitDocument(title); assert.equal(page.url(),url);
+};
 const setChecked = async (locator, checked) => {
   // Reagent's controlled checkbox state is committed on the next render frame.
   if (await locator.isChecked() !== checked) await locator.click();
@@ -243,6 +249,42 @@ try {
       assert.equal(await card.locator('.cell-text').textContent(),value);
     }
   });
+  await check('document URLs restore on refresh/new tabs, Home clears the URL, and history/missing IDs are safe', async () => {
+    await create('url first',3); await go(2,-3); await edit('99');
+    const firstURL=page.url(); assert.match(new URL(firstURL).hash,/^#\/table\/[^/]+$/);
+    await page.waitForFunction(()=>document.querySelector('.save-state')?.textContent==='Saved locally');
+    await reloadDocument('url first'); assert.equal(await coord(),'[2,-3,0]'); await waitText([2,-3,0],'99');
+    const sibling=await context.newPage();
+    try {
+      await sibling.goto(firstURL); await sibling.getByRole('grid').waitFor();
+      assert.equal(await sibling.locator('.document-title').textContent(),'url first');
+      assert.equal(await sibling.locator('[data-coord="[2,-3,0]"] .cell-text').textContent(),'99');
+    } finally { await sibling.close(); }
+    await clickText('Home'); assert.equal(new URL(page.url()).hash,'');
+    await page.reload(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'url first',exact:true})}).locator('.document-open').click();
+    assert.equal(page.url(),firstURL);
+    await create('url second',2); await edit('8'); const secondURL=page.url(); assert.notEqual(firstURL,secondURL);
+    await page.waitForFunction(()=>document.querySelector('.save-state')?.textContent==='Saved locally');
+    await clickText('Home'); await page.goBack(); await waitDocument('url second'); assert.equal(page.url(),secondURL); await waitText([0,0],'8');
+    await page.goBack(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+    await page.goBack(); await waitDocument('url first'); assert.equal(page.url(),firstURL); await waitText([2,-3,0],'99');
+    await page.goForward(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+    await page.goForward(); await waitDocument('url second'); assert.equal(page.url(),secondURL);
+    const missing=new URL(firstURL); missing.hash='#/table/missing-local-table';
+    await page.goto(missing.href); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+    assert.equal(new URL(page.url()).hash,'');
+    assert.equal(await page.locator('.toast').textContent(),"This table isn't stored in this browser.");
+    await page.evaluate(([a,b])=>{location.hash=a;location.hash=b;},[new URL(firstURL).hash,new URL(secondURL).hash]);
+    await waitDocument('url second'); assert.equal(page.url(),secondURL); await waitText([0,0],'8');
+    const fresh=await browser.newContext();
+    try {
+      const empty=await fresh.newPage(); await empty.goto(missing.href);
+      await empty.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+      assert.equal(await empty.locator('.document-card').count(),0);
+      assert.equal(new URL(empty.url()).hash,'');
+    } finally { await fresh.close(); }
+  });
   await check('0D has exactly one accessible numeric cell', async () => {
     await create('zero',0);
     assert.equal(await page.locator('td[role=gridcell]').count(), 1);
@@ -394,8 +436,7 @@ try {
     await page.getByRole('spinbutton',{name:'3D Z size'}).fill('17');
     assert.equal(await page.getByRole('spinbutton',{name:'3D Z size'}).inputValue(),'16');
     await clickText('Fit active bounds');
-    await page.waitForTimeout(150); await page.reload();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'OKLCH vs LCH',exact:true})}).locator('.document-open').click();
+    await page.waitForTimeout(150); await reloadDocument('OKLCH vs LCH');
     await page.locator('body').click({position:{x:2,y:2}}); await press('t');
     assert.equal(await page.locator('.cube-cell').count(),512);
     assert.equal(await page.getByRole('checkbox',{name:'3D show labels'}).isChecked(),true);
@@ -516,8 +557,7 @@ try {
     await press('u'); await waitText([0,0,1,1],'[0,0,1,1]');
     assert.equal(await page.locator('.hyper-view').count(),1);
     await setChecked(page.getByRole('checkbox',{name:'4D show labels'}),false);
-    await page.waitForTimeout(150); await page.reload();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'4D colors',exact:true})}).locator('.document-open').click();
+    await page.waitForTimeout(150); await reloadDocument('4D colors');
     await clickText('4D');
     assert.equal(await page.locator('.cube-cell').count(),16);
     assert.equal(await page.getByRole('checkbox',{name:'4D show labels'}).isChecked(),false);
@@ -542,8 +582,7 @@ try {
       await clickText(name);
       if (name==='4D') assert.equal(await page.getByLabel('4D W dimension').inputValue(),'8');
     }
-    await page.waitForTimeout(200); await page.reload(); await page.locator('.document-card').first().waitFor();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'shared queue',exact:true})}).locator('.document-open').click();
+    await page.waitForTimeout(200); await reloadDocument('shared queue');
     await clickText('4D'); assert.equal(await page.getByLabel('4D W dimension').inputValue(),'8');
   });
   await check('aliases, editable hyperplane headers, coordinate objects, dependencies, and persistence', async () => {
@@ -581,9 +620,7 @@ try {
     assert.ok(await page.locator('.hyper-row-value').count());
     assert.ok(await page.getByRole('button',{name:'Edit hyperplane cell date at 41',exact:true}).count());
     await page.screenshot({path:'/tmp/ndcalc-hyperplane-headers.png'});
-    await clickText('Plane'); await page.waitForTimeout(200); await page.reload();
-    await page.locator('.document-card').first().waitFor();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'header references',exact:true})}).locator('.document-open').click();
+    await clickText('Plane'); await page.waitForTimeout(200); await reloadDocument('header references');
     await waitText([42,0,0,0],'Design');
     assert.equal(await page.getByLabel('X dimension',{exact:true}).locator('option:checked').innerText(),'date');
     assert.equal(await page.getByRole('button',{name:'Edit hyperplane cell date at 42',exact:true}).locator('.cell-text').innerText(),'Earlier +1');
@@ -617,8 +654,7 @@ try {
     await page.mouse.move(r.x+r.width/2+100,r.y+r.height/2,{steps:5}); await page.mouse.up(); await press();
     assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .width-dot').count(),1);
     assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .cell-text').innerText(),'');
-    await page.waitForTimeout(200); await page.reload(); await page.locator('.document-card').first().waitFor();
-    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'presentation test',exact:true})}).locator('.document-open').click();
+    await page.waitForTimeout(200); await reloadDocument('presentation test');
     assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .width-dot').count(),1);
     await page.getByRole('button',{name:'ndcalc home',exact:true}).click(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
   });
@@ -749,7 +785,7 @@ try {
       open.onsuccess=()=>{const db=open.result, request=db.transaction('settings').objectStore('settings').get('preferences');
         request.onsuccess=()=>{resolve(request.result?.theme==='system'); db.close();};};
     }));
-    await page.reload(); await page.locator('.document-card').first().waitFor();
+    await reloadDocument(await page.locator('.document-title').textContent());
     assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'system');
     await page.emulateMedia({colorScheme:'light'});
     await page.waitForFunction(()=>document.querySelector('.app').dataset.theme==='light');

@@ -4,7 +4,8 @@
             [ndcalc.engine :as e]
             [ndcalc.storage :as db]
             [ndcalc.demo :as demo]
-            [ndcalc.preview :as preview]))
+            [ndcalc.preview :as preview]
+            [ndcalc.routing :as routing]))
 
 (defonce app (r/atom {:route :loading :doc nil :documents [] :theme "system" :system-dark false
                      :help false :panel :named :mode :normal :anchor nil :cursor :cell :hyper-dimension nil :plane-zoom 100
@@ -16,6 +17,7 @@
                      :save-status "Opening storage…" :toast nil :error nil}))
 (defonce runtime-cache (atom nil))
 (defonce last-save (atom (js/Promise.resolve)))
+(defonce route-request (atom 0))
 (defonce toast-timer (atom nil))
 
 (defn notify! [message]
@@ -404,15 +406,19 @@
                  (let [item (nth rules from) remaining (vec (concat (subvec rules 0 from) (subvec rules (inc from))))]
                    (assoc doc :rules (vec (concat (subvec remaining 0 to) [item] (subvec remaining to))))))))))
 
-(defn open-document! [doc]
-  (swap! app assoc :doc doc :route :editor :anchor nil :mode :normal :named-focus nil :cursor :cell :hyper-dimension nil
-         :editor nil :rule-editor nil :dialog nil :command nil :undo [] :redo [] :view :plane
-         :cube-axes [1 2 3] :cube-fit false :cube-initialized false
-         :hyper-axes [1 2 3 4] :hyper-fit false :hyper-initialized false :css-draft (:css doc))
-  (install-axis-queue! (axis-queue) false)
-  (let [[x y] (mapping)]
-    (swap! app assoc :viewport [(dec (e/axis-value (numeric-coord) x)) (dec (e/axis-value (numeric-coord) y))]))
-  (ensure-visible!))
+(defn open-document!
+  ([doc] (open-document! doc :push))
+  ([doc history-mode]
+   (swap! route-request inc)
+   (when-not (= :none history-mode) (routing/navigate! (:id doc) (= :replace history-mode)))
+   (swap! app assoc :doc doc :route :editor :anchor nil :mode :normal :named-focus nil :cursor :cell :hyper-dimension nil
+          :editor nil :rule-editor nil :dialog nil :command nil :undo [] :redo [] :view :plane
+          :cube-axes [1 2 3] :cube-fit false :cube-initialized false
+          :hyper-axes [1 2 3 4] :hyper-fit false :hyper-initialized false :css-draft (:css doc))
+   (install-axis-queue! (axis-queue) false)
+   (let [[x y] (mapping)]
+     (swap! app assoc :viewport [(dec (e/axis-value (numeric-coord) x)) (dec (e/axis-value (numeric-coord) y))]))
+   (ensure-visible!)))
 
 (defn open-example! [make]
   (open-document! (make))
@@ -421,9 +427,33 @@
 
 (defn refresh-documents! []
   (.then (db/all-documents!) #(swap! app assoc :documents %)))
+(defn show-home! []
+  (swap! route-request inc)
+  (swap! app assoc :route :home :editor nil :rule-editor nil :dialog nil :command nil))
 (defn home! []
-  (swap! app assoc :route :home :editor nil :rule-editor nil :dialog nil :command nil)
+  (show-home!)
+  (routing/navigate! nil false)
   (-> @last-save (.then (fn [_] (refresh-documents!))) (.catch report!)))
+
+(defn restore-document-route! [docs id]
+  (swap! app assoc :documents docs :save-status "Saved locally")
+  (if-let [doc (when id (first (filter #(= id (:id %)) docs)))]
+    (open-document! doc :none)
+    (do (show-home!)
+        (when id
+          (routing/navigate! nil true)
+          (notify! "This table isn't stored in this browser.")))))
+(defn restore-url! []
+  (when-not (= :loading (:route @app))
+    (let [id (routing/current-id) request (swap! route-request inc)]
+      ;; Duplicate popstate/hashchange events must not reset a live editor.
+      (when-not (and id (= :editor (:route @app)) (= id (get-in @app [:doc :id])))
+        (-> @last-save
+            (.then (fn [_] (db/all-documents!)))
+            (.then (fn [docs]
+                     (when (and (= request @route-request) (= id (routing/current-id)))
+                       (restore-document-route! docs id))))
+            (.catch (fn [err] (when (= request @route-request) (report! err)))))))))
 
 (defn create-document! [title n]
   (guard! #(do (when (str/blank? title) (e/fail "Give your table a name."))
@@ -635,6 +665,7 @@
                                                :hyper-options (merge preview/hyper-default-options (:hyper-options new))}) report!)))))
 
 (defn init! []
+  (routing/install! (fn [_] (restore-url!)))
   (-> (db/open!)
       (.then (fn [_] (db/preferences!)))
       (.then (fn [prefs]
@@ -646,7 +677,8 @@
                (install-persistence!)
                (db/all-documents!)))
       (.then (fn [docs]
-               (swap! app assoc :documents docs)
-               (if (empty? docs) (open-document! (demo/demo-document))
-                 (swap! app assoc :route :home :save-status "Saved locally"))))
+               (let [id (routing/current-id)]
+                 (if (and (nil? id) (empty? docs))
+                   (open-document! (demo/demo-document) :replace)
+                   (restore-document-route! docs id)))))
       (.catch (fn [err] (report! err) (swap! app assoc :route :home :save-status "Storage unavailable")))))

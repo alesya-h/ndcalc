@@ -34,6 +34,10 @@ CHROME_CDP_URL=http://127.0.0.1:9222 npm run test:e2e
 
 `NDCALC_URL` sets the browser-test URL. `PORT` sets the production server port. Tests use isolated browser contexts and do not touch your tables.
 
+## Document URLs
+
+Opening a table puts its local document ID in the URL (`#/table/<id>`). Refreshing or reopening that URL in the same browser restores the table and its saved coordinates/axis queue. Home clears the table fragment, and browser Back/Forward switches between the library and tables. A missing/deleted table returns to Home with a notice. These URLs reference **local IndexedDB data**, not a shareable copy; use JSON export/import to transfer a table to another browser.
+
 ## Cells and coordinates
 
 Tables are sparse, with **0–32 dimensions**, tested through 5D. Numeric coordinates are signed JavaScript safe integers. Omitted coordinates are zero; extra zero coordinates are aliases:

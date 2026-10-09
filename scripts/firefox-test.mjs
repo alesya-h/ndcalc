@@ -49,7 +49,7 @@ try {
   await waitFor('document.querySelector(".sheet")');
   await evaluate(`document.querySelectorAll('button').forEach(b=>{if(b.textContent.trim()==='3D')b.click()})`);
   await waitFor('document.querySelector(".cube-stage")');
-  await evaluate(`history.pushState({},'', '#wheel-test'); window.__wheelEvents=[];
+  await evaluate(`history.pushState({},'', location.pathname + '?wheel-test' + location.hash); window.__wheelEvents=[];
     document.addEventListener('wheel',e=>setTimeout(()=>__wheelEvents.push({alt:e.altKey,prevented:e.defaultPrevented}),0),{capture:true})`);
   const {value:point}=await evaluate(`JSON.stringify((()=>{const r=document.querySelector('.cube-stage').getBoundingClientRect();
     return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})())`);
