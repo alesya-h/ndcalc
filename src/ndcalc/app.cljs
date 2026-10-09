@@ -11,5 +11,5 @@
 (defn init []
   (state/install-system-theme!)
   (mount!)
-  (.addEventListener js/document "keydown" state/keydown!)
+  (.addEventListener js/document "keydown" state/keydown! true)
   (state/init!))

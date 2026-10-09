@@ -7,21 +7,28 @@
 (defn blank-document [title dimensions]
   {:id (str (random-uuid)) :title title :dimensions dimensions
    :createdAt (.now js/Date) :updatedAt (.now js/Date)
-   :cells {} :named {} :hyperplanes {} :aliases {} :rules [] :css default-css
+   :cells {} :named {} :hyperplanes {} :aliases {} :cell-widths {} :rules [] :css default-css
    :view {:coord (vec (repeat dimensions 0)) :mapping (e/initial-mapping dimensions)}})
 
 (defn color-document []
   (let [doc (blank-document "OKLCH vs LCH" 4)
         doc (reduce (fn [d c] (e/put-cell d c {:kind "formula" :source "(a,b,c,space) => [a,b,c,space]"}))
                     doc (for [space (range 2) c (range 8) b (range 8) a (range 8)] [a b c space]))
+        doc (e/set-aliases doc {1 "lightness" 2 "chroma" 3 "hue" 4 "space"})
+        doc (reduce (fn [doc [d c source]] (e/put-cell doc {:hyperplane [d c]} {:kind "formula" :source source}))
+                    doc (concat (for [c (range 8)] [1 c "(d,c) => c*100/8"])
+                                (for [c (range 8)] [2 c "(d,c) => c/8"])
+                                (for [c (range 8)] [3 c "(d,c) => c*360/8"])))
         doc (-> doc
+                (e/put-cell {:hyperplane [4 0]} {:kind "value" :source "'OKLCH'"})
+                (e/put-cell {:hyperplane [4 1]} {:kind "value" :source "'LCH'"})
                 (e/put-cell ["axes"] {:kind "value" :source "['Lightness (0–7)', 'Chroma (0–7)', 'Hue (0–7)', 'Color space: 0 OKLCH, 1 LCH']"})
                 (e/put-cell ["notes"] {:kind "value" :source "'D4 compares OKLCH and CIELCH (D50). Lightness 0–87.5%, hue 0–315°. Chroma uses each space’s own scale: 0–0.35 vs 0–131.25, not equivalent colorimetric values. Out-of-sRGB colors are browser gamut-mapped. In 4D the two spaces appear side by side.'"}))]
     (assoc doc :view {:coord [0 0 3 0] :mapping [1 2]}
            :css ""
            :rules [{:id (str (random-uuid)) :name "OKLCH / CIELCH comparison" :enabled true
                     :coord "(...coord) => typeof coord[0] === 'number'"
-                    :value "v => Array.isArray(v) ? `background-color: ${v[3] === 0 ? `oklch(${v[0]*100/8}% ${v[1]*0.4/8} ${v[2]*360/8})` : `lch(${v[0]*100/8}% ${v[1]*150/8} ${v[2]*360/8})`}; color: ${v[0] < 5 ? 'white' : '#17202b'};` : ''"}])))
+                    :value "v => Array.isArray(v) ? `background-color: ${v[3] === 0 ? `oklch(${_.value('lightness')}% ${$$.chroma*0.4} ${$$.hue})` : `lch(${_.value('lightness')}% ${$$.chroma*150} ${$$.hue})`}; color: ${v[0] < 5 ? 'white' : '#17202b'};` : ''"}])))
 
 (defn demo-document []
   (let [doc (blank-document "5D example" 5)
@@ -52,6 +59,14 @@
         doc (reduce (fn [d [coord source]] (e/put-cell d coord (value source))) doc
                     [[[0 0 1] "A second slice"] [[1 1 1] 42] [[2 2 1] 84]
                      [[0 0 0 1] "Dimension four"] [[1 1 0 0 1] "Dimension five"]])]
+    (let [doc (e/set-aliases doc {1 "metric" 2 "department" 3 "scenario" 4 "currency" 5 "period"})
+          doc (reduce (fn [doc [c label]] (e/put-cell doc {:hyperplane [1 c]} (value label))) doc (map-indexed vector headings))
+          doc (reduce (fn [doc [c label]] (e/put-cell doc {:hyperplane [2 c]} (value label))) doc
+                      (concat [[0 "Legend"] [7 "Total"]] (map-indexed (fn [i row] [(inc i) (first row)]) data)))
+          doc (reduce (fn [doc [d labels]] (reduce (fn [doc [c label]] (e/put-cell doc {:hyperplane [d c]} (value label)))
+                                                  doc (map-indexed vector labels))) doc
+                      [[3 ["Baseline" "Alternative"]] [4 ["USD" "EUR"]] [5 ["2026-01" "2026-02"]]])
+          doc (reduce (fn [doc y] (e/put-cell doc [0 y] (formula "=> _.value('department')"))) doc (range 1 6))]
     (assoc doc :rules
            [{:id (str (random-uuid)) :name "Column headings" :enabled true
              :coord "(x,y,...rest) => typeof x === 'number' && y === 0 && rest.every(v => v === 0)"
@@ -61,4 +76,4 @@
              :value "v => typeof v === 'number' ? [v < 0 ? 'negative' : 'positive'] : []"}
             {:id (str (random-uuid)) :name "Totals row" :enabled true
              :coord "(x,y) => typeof x === 'number' && y === 7"
-             :value "v => ['total']"}])))
+             :value "v => ['total']"}]))))

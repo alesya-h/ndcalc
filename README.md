@@ -30,6 +30,8 @@ npm run test:e2e                # Keep dev/serve running on port 8080
 CHROME_CDP_URL=http://127.0.0.1:9222 npm run test:e2e
 ```
 
+`npm run test:firefox` checks **native Firefox Alt+wheel** against history navigation using WebDriver BiDi and a disposable profile. Requires a system Firefox; `FIREFOX_BIN` overrides its executable.
+
 `NDCALC_URL` sets the browser-test URL. `PORT` sets the production server port. Tests use isolated browser contexts and do not touch your tables.
 
 ## Cells and coordinates
@@ -63,13 +65,19 @@ New numeric formulas are prefilled with one named argument per table dimension (
 
 A function stored as **Value** is not called automatically. A formula can explicitly call it: `() => $("as_function")(21)`.
 
+### Text mode and cell widths
+
+**Alt+Enter** opens Text mode, including for an empty cell. Enter/i automatically uses Text for an existing literal string. This is presentation only: applying stores a normal **Value** with `JSON.stringify` source, preserving quotes, backslashes, Unicode, line breaks and empty strings. Text ↔ Value encodes/decodes the literal without executing arbitrary source. Computed-string expressions and Formulas are not automatically converted. Multiline values remain available in the editor/tooltip; grid rows display their first line.
+
+**Auto width** measures each cell's content and clamps it from a square cell to **400px**. A column takes its largest cell width in the current slice, including populated cells outside the visible row window and its hyperplane header. With preview labels hidden, ordinary cells use their square minimum; visible headers still size to their text. Override with the editor's **Cell width** field (35–2000px) or mouse/pen-drag a cell's right edge. Double-click the edge or choose **Auto** to reset. A bottom-right dot marks manual widths. Widths support empty/header/named cells, do not populate numeric bounds, survive undo/export/reload, and follow copied cells. Touch users can set widths in the editor without sacrificing swipe gestures.
+
 Display uses stringification: text as-is, JSON for objects/arrays, source for functions, and readable fallbacks for BigInt, symbols, maps, sets, or circular objects. Empty cells display blank; an explicitly stored `undefined` displays `undefined`. React renders these as text, not HTML.
 
 ### Axis aliases, hyperplane values, and coordinate objects
 
 **Dimensions → Axis aliases** assigns optional unique names (up to 80 characters), such as `date` or `department`. Aliases appear in chips, selectors, slice inputs, and preview headers instead of dimension numbers. Numeric dimension IDs still work in formulas; aliases are case-sensitive. Renaming an alias does not rewrite existing JavaScript—update references using its old name.
 
-A **hyperplane cell** belongs to one `(dimension, coordinate)` pair and is shared across all other dimensions. Use it for dates, department names, units, rates, or other axis-associated values. Each grid has **two horizontal header rows and two vertical header columns**: raw coordinates, then their computed hyperplane values, then ordinary cells. 4D also has these paired headers for outer Z/W slices. Click a value header to edit; focused headers support Enter/i, Shift+Enter/I for Formula, and Delete/Backspace to clear. In 3D Stack, headers remain clickable while dragging ordinary cells rotates the camera.
+A **hyperplane cell** belongs to one `(dimension, coordinate)` pair and is shared across all other dimensions. Use it for dates, department names, units, rates, or other axis-associated values. Each grid has **two horizontal header rows and two vertical header columns**: raw coordinates, then their computed hyperplane values, then ordinary cells. 4D also has these paired headers for outer Z/W slices. Click a value header to edit; focused headers support Enter/i, Shift+Enter/I for Formula, and Delete/Backspace to clear. In 3D Stack, headers remain clickable while mouse-dragging ordinary cells rotates the camera. Intersections form a **2×2 corner**: axis names off-diagonal and diagonal lines in the other two cells.
 
 Hyperplane cells have explicit Value/Formula types, accept arbitrary JavaScript values, participate in dependency tracking/cycle detection and undo, and persist with the table. Missing values return `undefined`. They do **not** expand numeric populated bounds; removing a dimension with populated hyperplane cells is refused. The null axis supports only coordinate zero.
 
@@ -93,6 +101,8 @@ Formatting functions also receive the bound `_`, `$`, and `$$`. `_.kind` is `"ce
 Formulas are synchronous and demand-evaluated. Each content revision has a memoized dependency graph; edits invalidate it, including conditional dependencies and named references. Circular references and evaluation errors appear in cells without breaking the table. There are guards for dependency depth and cell-evaluation count per root calculation, rather than per browsing session. Missing coordinates do not accumulate cache entries as you navigate. Prefer pure, deterministic functions. Promises are ordinary values, not awaited spreadsheet calculations.
 
 ## Dimensions and views
+
+**Dimensions:** precedes the axis chips; the topbar dimensional badge opens the same configuration dialog. Both the ndcalc logo and Home return to the library; the Home / document-title breadcrumb follows the logo.
 
 The default plane is `(X,Y) = (1,2)` (or `(1,0)` for 1D and `(0,0)` for 0D). Dimensions are **1-based**; **0** is the null axis: one column in X, one row in Y. `T` cycles all axis orders: two in the plane, six in 3D, and 24 in 4D, without changing coordinates or selection.
 
@@ -131,9 +141,11 @@ All views share a persisted **full axis queue containing every existing dimensio
 
 `t` cycles **Plane → 3D → 4D → Plane**, skipping views without enough distinct available dimensions (including null). 3D therefore needs at least two numeric dimensions and 4D at least three. Existing null axes are preserved. Resizing below the minimum returns to the plane. Computed values, selection highlighting, and active-hypercube formatting are shared by all views. Use Stack/Slices buttons for the 3D layout. **Ctrl+t and Ctrl+Shift+t are not intercepted**, leaving browser tab shortcuts intact.
 
-Ordinary scroll/trackpad gestures **pan horizontally and vertically**, including a scrollable 3D Stack canvas. **Alt+scroll zooms** in 3D/4D. In 3D, Ctrl+scroll adjusts layer gap; Shift+scroll adjusts transparency only in Stack (it remains available for native horizontal panning in Slices/4D). Only handled modifier gestures prevent default browser behavior. `f` toggles Follow cell, `F` fits active bounds, and `l` toggles Labels in either volume view.
+Ordinary scroll/trackpad gestures **pan horizontally and vertically**, including a scrollable 3D Stack canvas. **Alt+scroll zooms** in every canvas, including Plane. In 3D, Ctrl+scroll adjusts layer gap; Shift+scroll adjusts transparency only in Stack (it remains available for native horizontal panning in Slices/4D). Native non-passive **capture-phase** wheel handlers prevent handled gestures from reaching browser defaults. Keyboard handling also runs in capture phase; typing fields and unmapped browser shortcuts remain native. Firefox's native Alt+wheel history behavior is regression-tested. Browser/OS-reserved shortcuts that never reach page JavaScript cannot be overridden; Ctrl+t / Ctrl+Shift+t intentionally remain native. `f` toggles Follow cell, `F` fits active bounds, and `l` toggles Labels in either volume view.
 
-Home → **Open OKLCH vs LCH** creates 1,024 coordinate formulas over an 8×8×8×2 table. D1/D2/D3 select lightness/chroma/hue; **D4 chooses OKLCH or CIELCH (D50)**. In 4D the spaces appear side by side, with hue slices vertically. Chroma uses each space's own scale (OKLCH 0–0.35, LCH 0–131.25), not equal colorimetric values; out-of-sRGB colors are browser gamut-mapped.
+**Touch:** one finger pans and two fingers pan/pinch-zoom in Plane, 3D Stack/Slices and 4D. Touch-panning Stack does not rotate or change selection; mouse dragging still rotates. Tap selects a cell, double tap edits, and tapping a header opens its editor. Plane panning advances the bounded coordinate window beyond the current DOM cells. Native page zoom/history overscroll is prevented within canvases.
+
+Home → **Open OKLCH vs LCH** creates 1,024 coordinate formulas over an 8×8×8×2 table. Aliased axes **lightness/chroma/hue** have editable numeric hyperplane values; **space chooses OKLCH or CIELCH (D50)**. Color formatting reads these values through `$$` / `_.value(...)`. In 4D the spaces appear side by side, with hue slices vertically. Chroma uses each space's own scale (OKLCH 0–0.35, LCH 0–131.25), not equal colorimetric values; out-of-sRGB colors are browser gamut-mapped.
 
 The **4D view** (4D button or the second `t`) is a scrollable matrix of X/Y panels: **W runs horizontally**, **Z vertically**, with higher Z at the top. Sticky row/column headers identify both slice coordinates. The four axes have independent sizes, with the same 1–32 per-axis and 4,096-cell total limits. Fit active bounds, Follow cell, labels, wheel zoom, cell selection, and editing work as in 3D Slices. Empty tables start with a 4×4×4×4 window. Numeric dimension keys operate on the four-element prefix of the same full queue, including `0` as a one-cell null axis.
 
@@ -182,8 +194,10 @@ Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no h
 | Shift+Enter / `I` | Edit as a formula |
 | `f` / `F` | Toggle Follow cell / fit active bounds (3D/4D) |
 | `l` | Toggle Labels (3D/4D) |
-| Scroll | Pan horizontally / vertically (3D/4D) |
-| Alt+Scroll | Zoom (3D/4D) |
+| Scroll / one-finger swipe | Pan horizontally / vertically (all canvases) |
+| Alt+Scroll / two-finger pinch | Zoom (all canvases) |
+| Alt+Enter | Edit verbatim text |
+| `H` | Cycle cell → hyperrow → hypercolumn → cell |
 | Ctrl+Scroll / Shift+Scroll | Layer gap / stack transparency (3D) |
 | `v` / Ctrl+V | Toggle n-dimensional visual selection |
 | Shift+arrows / Shift+click | Extend selection |
@@ -202,6 +216,8 @@ Press **h** to toggle the left cheatsheet (`?` remains an alias). There are no h
 | `t` | Cycle plane → 3D → 4D → plane |
 
 Panel shortcuts (`n`, `c`, `r`) or clicking an inspector tab **hide an already active panel**. A narrow tab rail remains for mouse reopening. Browser Ctrl+t / Ctrl+Shift+t keep their native behavior.
+
+**`H` hypercell cursors:** the ordinary current cell and its X/Y hyperplane values always have borders. `H` cycles the stronger highlight: **cell → hyperrow (top headers, X) → hypercolumn (left headers, Y)**. Hyper-mode movement is restricted to its single actual dimension; unrelated arrows/slots do nothing. `v`/Shift selects an inclusive hyperline; Enter/Alt+Enter/I fills it, `y`/`p` copies/pastes, and Delete clears it without altering ordinary cells. Hyperlines can cross orientations or paste into an ordinary row; multidimensional blocks cannot silently collapse into a line. Ordinary clicks restore the cell cursor; Shift+click on headers extends their selection. 4D's outer Z/W headers also support their own axis cursor. Selection borders overlay formatting, remaining visible when rules override backgrounds.
 
 Axis operations use lowercase for **X**, uppercase for **Y**. Visual selection keeps an n-dimensional anchor and selects the inclusive box between it and the current cell, across **all** dimensions. Switching planes, using the axis dropdowns, changing fixed slice coordinates, or jumping with `g`/`G` preserves the selection. The plane highlights its intersection with that box; the selected-cell count includes hidden slices. Enter/fill, Delete, and `y` operate on the entire box, not just the visible plane. Escape or `v` cancels selection; filling, clearing, or copying finishes it.
 
@@ -233,13 +249,13 @@ At render time the coordinate predicate runs first. Only a match invokes the val
 
 ## Persistence and JSON
 
-All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and full shared axis queue, aliases, and hyperplane cells—automatically saves to **IndexedDB**. Theme choice (**System**, Light, Dark) and 3D/4D size/layout/labels/camera preferences, including stack transparency and mouse-adjusted angles, are also stored there. **System is the default**, tracks `prefers-color-scheme` live, and follows OS changes only while selected. Light/Dark overrides stay fixed. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
+All committed table data—including source, named cells, rules, CSS, dimension count, current coordinate, plane mapping, and full shared axis queue, aliases, hyperplane cells and per-cell widths—automatically saves to **IndexedDB**. Theme choice (**System**, Light, Dark) and plane zoom / 3D/4D size/layout/labels/camera preferences, including stack transparency and mouse-adjusted angles, are also stored there. **System is the default**, tracks `prefers-color-scheme` live, and follows OS changes only while selected. Light/Dark overrides stay fixed. Fit/follow state is session-local and resets for a newly opened document. Home lists all documents without evaluating their JavaScript. The save indicator reflects transaction completion; storage failures are visible.
 
 Export downloads an `.ndcalc.json` document. Import validates the schema and JavaScript syntax **without executing expressions**, asks for trust, then creates a new document ID. It never overwrites an existing table. Imports are limited to 10 MB.
 
 JSON stores **source**, not computed values. This preserves function-valued cells and expressions producing non-JSON values. On reopen, values are reconstructed from their source; mutated runtime object identity, external closures, nondeterministic results, and async work are not serialized snapshots.
 
-The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, `cells` keyed by canonical numeric coordinate JSON, `named`, `rules`, `css`, and `view`. Optional `aliases` maps numeric dimension keys to names; `hyperplanes` maps `[dimension, coordinate]` JSON keys to source-backed cell records; `view.axes` holds the full queue. Older documents without these fields remain supported and migrate their saved mapping/recency into the queue.
+The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, `cells` keyed by canonical numeric coordinate JSON, `named`, `rules`, `css`, and `view`. Optional `aliases` maps numeric dimension keys to names; `hyperplanes` maps `[dimension, coordinate]` JSON keys to source-backed cell records; `view.axes` holds the full queue. Optional `cell-widths` maps canonical targets (numeric/name arrays or hyperplane objects) to per-cell pixel overrides. Older documents without these fields remain supported and migrate their saved mapping/recency into the queue.
 
 ### Trust boundary
 
@@ -247,7 +263,9 @@ The v1 schema contains `format: "ndcalc"`, `version: 1`, `title`, `dimensions`, 
 
 ## Layout
 
-- `src/ndcalc/engine.cljs` — coordinates, aliases, hyperplane cells, coordinate objects, evaluation, formatting, JSON validation.
+- `src/ndcalc/engine.cljs` — coordinates, aliases, hyperplanes, coordinate objects, literal strings, evaluation, formatting, JSON validation.
+- `src/ndcalc/layout.cljs` — natural/per-cell widths and sparse column sizing.
+- `src/ndcalc/gestures.cljs` — native captured wheel and touch pan/pinch/tap.
 - `src/ndcalc/state.cljs` — modal commands, selection, undo, clipboard, persistence orchestration.
 - `src/ndcalc/storage.cljs` — IndexedDB transactions and preferences.
 - `src/ndcalc/ui.cljs` — Reagent components, editor, document library, inspector, 3D preview and 4D slice matrix.

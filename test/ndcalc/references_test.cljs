@@ -106,7 +106,7 @@
   (s/open-document! (e/put-cell (base) [5 2] (formula "=> $$.department")))
   (is (= "Sales" (:value ((:evaluate (s/runtime)) [5 2]))))
   (s/open-hyperplane! "department" 2 nil)
-  (swap! s/app assoc-in [:editor :source] "'Engineering'")
+  (swap! s/app assoc-in [:editor :source] "Engineering")
   (s/save-editor!)
   (is (= "Engineering" (:value ((:evaluate (s/runtime)) [5 2]))))
   (s/undo! false) (is (= "Sales" (:value ((:evaluate (s/runtime)) [5 2]))))

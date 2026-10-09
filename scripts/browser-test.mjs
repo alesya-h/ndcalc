@@ -29,13 +29,19 @@ const setChecked = async (locator, checked) => {
   await press();
   assert.equal(await locator.isChecked(), checked);
 };
+const cellCursor = async () => {
+  for (let i=0; i<3 && (await page.locator('.cursor-mode').textContent())!=='cell'; i++) await press('H');
+};
 const edit = async (source, formula = false) => {
+  await cellCursor();
   await press(formula ? 'I' : 'Enter');
+  if (!formula) await page.getByRole('button',{name:/^≡ Value/}).click();
   await page.getByRole('textbox', {name:'Cell JavaScript source'}).fill(source);
   await press('Control+Enter');
   await page.getByRole('dialog').waitFor({state:'hidden'});
 };
 const go = async (x,y) => {
+  await cellCursor();
   await page.locator('body').click({position:{x:2,y:2}}); // leave input focus
   await press('g', ...String(x).split(''), 'Enter', 'G', ...String(y).split(''), 'Enter');
 };
@@ -209,8 +215,8 @@ try {
     await press('t'); assert.equal(await page.locator('.hyper-view').count(),1);
     await press('t');
     await page.getByLabel('X dimension', {exact:true}).selectOption('1');
-    await page.getByLabel('Dimension 3 slice coordinate').fill('0');
-    await page.getByLabel('Dimension 3 slice coordinate').blur();
+    await page.getByLabel('scenario slice coordinate').fill('0');
+    await page.getByLabel('scenario slice coordinate').blur();
   });
   await check('JSON download/upload preserves sources and creates a trusted copy', async () => {
     const downloadPromise = page.waitForEvent('download');
@@ -311,19 +317,25 @@ try {
     await waitText([5,4,3,0],'[5,4,3,0]');
     assert.match(await page.locator('[data-coord="[5,4,3,0]"] .cell-content').evaluate(el=>getComputedStyle(el).backgroundColor),/oklch/);
     assert.match(await page.locator('.status-right').innerText(),/1024 cells$/);
-    await page.getByLabel('Dimension 4 slice coordinate').fill('1');
-    await page.getByLabel('Dimension 4 slice coordinate').blur();
+    await page.getByLabel('space slice coordinate').fill('1');
+    await page.getByLabel('space slice coordinate').blur();
     assert.match(await page.locator('[data-coord="[5,4,3,1]"] .cell-content').evaluate(el=>getComputedStyle(el).backgroundColor),/^lch/);
-    await page.getByLabel('Dimension 4 slice coordinate').fill('0');
-    await page.getByLabel('Dimension 4 slice coordinate').blur();
+    await page.getByLabel('space slice coordinate').fill('0');
+    await page.getByLabel('space slice coordinate').blur();
     await page.locator('body').click({position:{x:2,y:2}}); await press('t'); await clickText('Stack');
     assert.equal(await page.locator('.cube-cell').count(),512);
     assert.equal(await page.locator('.cube-layer').count(),8);
     await setChecked(page.getByRole('checkbox',{name:'3D show labels'}),false);
     const selectedBeforeDrag = await coord();
     const rotationBefore = Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue());
-    const stage = await page.locator('.cube-stage').boundingBox();
-    const start = {x:stage.x+stage.width/2,y:stage.y+stage.height/2};
+    const start = await page.locator('.cube-stage').evaluate(el=>{
+      const r=el.getBoundingClientRect();
+      for (const [a,b] of [[.5,.5],[.1,.5],[.9,.5],[.3,.7]]) {
+        const x=r.x+r.width*a,y=r.y+r.height*b,hit=document.elementFromPoint(x,y);
+        if(el.contains(hit) && !hit.closest('.hyperplane-edit,.cell-resize')) return {x,y};
+      }
+      throw new Error('No unobstructed stack drag point');
+    });
     await page.mouse.move(start.x,start.y); await page.mouse.down();
     await page.mouse.move(start.x+90,start.y-45,{steps:10}); await page.mouse.up(); await press();
     assert.notEqual(Number(await page.getByRole('slider',{name:'3D rotation'}).inputValue()),rotationBefore);
@@ -557,8 +569,9 @@ try {
     await press('Control+Enter'); await waitText([42,0,0,0],'Earlier +1');
     await page.locator('body').click({position:{x:2,y:2}}); await edit('=> $$.department',true);
     await page.getByRole('button',{name:'Edit hyperplane cell department at 0',exact:true}).click();
-    await page.getByRole('textbox',{name:'Cell JavaScript source'}).fill("'QA'"); await press('Control+Enter');
+    await page.getByRole('textbox',{name:'Cell text'}).fill('QA'); await press('Control+Enter');
     await waitText([42,0,0,0],'QA'); await press('u'); await waitText([42,0,0,0],'Design');
+    await cellCursor();
     await clickText('4D');
     assert.ok(await page.locator('.hyper-column-value').count());
     assert.ok(await page.locator('.hyper-row-value').count());
@@ -570,6 +583,102 @@ try {
     await waitText([42,0,0,0],'Design');
     assert.equal(await page.getByLabel('X dimension',{exact:true}).locator('option:checked').innerText(),'date');
     assert.equal(await page.getByRole('button',{name:'Edit hyperplane cell date at 42',exact:true}).locator('.cell-text').innerText(),'Earlier +1');
+  });
+  await check('document-path navigation, 2×2 corners, Text mode, natural widths, and width persistence', async () => {
+    await create('presentation test',4);
+    assert.equal(await page.locator('.home-button').evaluate(el=>el.previousElementSibling.classList.contains('brand')),true);
+    assert.equal(await page.locator('.dimension-bar').evaluate(el=>el.firstElementChild.textContent.trim()),'Dimensions:');
+    await page.getByRole('button',{name:'Configure dimensions',exact:true}).click();
+    assert.equal(await page.getByRole('spinbutton',{name:'Dimension count'}).inputValue(),'4'); await press('Escape');
+    await page.locator('body').click({position:{x:2,y:2}});
+    assert.equal(await page.locator('.sheet thead .corner-diagonal').count(),2);
+    assert.equal(await page.locator('.sheet thead [colspan]').count(),0);
+    const verbatim='He said "hello".\nQuotes, `ticks`, ${notExecuted}, and \\slashes.';
+    await press('Alt+Enter'); await page.getByRole('textbox',{name:'Cell text'}).fill(verbatim); await press('Control+Enter');
+    await waitText([0,0,0,0],verbatim);
+    await press('Enter'); assert.equal(await page.getByRole('textbox',{name:'Cell text'}).inputValue(),verbatim);
+    await page.getByRole('button',{name:/^≡ Value/}).click();
+    assert.equal(await page.getByRole('textbox',{name:'Cell JavaScript source'}).inputValue(),JSON.stringify(verbatim));
+    await page.getByRole('button',{name:/^≡ Text/}).click();
+    await page.getByRole('spinbutton',{name:'Cell width',exact:true}).fill('220'); await press('Control+Enter');
+    assert.equal(await page.locator('[data-coord="[0,0,0,0]"] .width-dot').count(),1);
+    assert.ok(Math.abs(await page.locator('[data-coord="[0,0,0,0]"]').evaluate(el=>el.getBoundingClientRect().width)-220)<1);
+    await go(0,1); await press('Alt+Enter'); await page.getByRole('textbox',{name:'Cell text'}).fill('W'.repeat(100)); await press('Control+Enter');
+    assert.ok(Math.abs(await page.locator('[data-coord="[0,0,0,0]"]').evaluate(el=>el.getBoundingClientRect().width)-400)<1);
+    await press('Enter'); await page.getByRole('spinbutton',{name:'Cell width',exact:true}).fill('155'); await press('Control+Enter');
+    assert.ok(Math.abs(await page.locator('[data-coord="[0,0,0,0]"]').evaluate(el=>el.getBoundingClientRect().width)-220)<1);
+    await go(3,0);
+    const handle=page.locator('[data-coord="[3,0,0,0]"] .cell-resize'), r=await handle.boundingBox();
+    await page.mouse.move(r.x+r.width/2,r.y+r.height/2); await page.mouse.down();
+    await page.mouse.move(r.x+r.width/2+100,r.y+r.height/2,{steps:5}); await page.mouse.up(); await press();
+    assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .width-dot').count(),1);
+    assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .cell-text').innerText(),'');
+    await page.waitForTimeout(200); await page.reload(); await page.locator('.document-card').first().waitFor();
+    await page.locator('.document-card').filter({has:page.getByRole('heading',{name:'presentation test',exact:true})}).locator('.document-open').click();
+    assert.equal(await page.locator('[data-coord="[3,0,0,0]"] .width-dot').count(),1);
+    await page.getByRole('button',{name:'ndcalc home',exact:true}).click(); await page.getByRole('heading',{name:'Tables',exact:true}).waitFor();
+  });
+  await check('H focuses hyperrows/hypercolumns, constrains motion, fills/copies/pastes, and keeps borders visible over rules', async () => {
+    await create('hyper selection',4); await edit('7'); await clickText('Rules'); await page.getByRole('button',{name:'Add formatting rule'}).click();
+    await page.getByRole('textbox',{name:'Rule name'}).fill('solid background');
+    await page.getByRole('textbox',{name:'Coordinate predicate'}).fill('()=>true');
+    await page.getByRole('textbox',{name:'Value predicate'}).fill("()=> 'background: magenta'"); await press('Control+Enter');
+    await page.locator('body').click({position:{x:2,y:2}}); await press('v','ArrowRight','ArrowDown');
+    const border=await page.locator('.sheet td.selected').first().evaluate(el=>getComputedStyle(el,'::before').borderTopStyle);
+    assert.equal(border,'solid'); await press('Escape'); await go(0,0);
+    await press('H'); assert.equal(await page.locator('.cursor-mode').textContent(),'hyperrow');
+    assert.equal(await page.locator('.sheet .cursor-secondary').count(),3);
+    assert.equal(await page.locator('.sheet .cursor-primary').count(),1);
+    await press('ArrowDown'); assert.equal(await coord(),'D1(0)');
+    await press('v','ArrowRight','ArrowRight'); assert.equal(await page.locator('.selection-count').textContent(),'3 selected');
+    await press('Alt+Enter'); await page.getByRole('textbox',{name:'Cell text'}).fill('Hello'); await press('Control+Enter');
+    const h=(d,c)=>page.locator(`[data-hyperplane='[${d},${c}]'] .cell-text`).first();
+    for (let c=0;c<3;c++) assert.equal(await h(1,c).textContent(),'Hello');
+    await press('v','ArrowLeft','ArrowLeft','y','H','p');
+    assert.equal(await page.locator('.cursor-mode').textContent(),'hypercolumn');
+    for (let c=0;c<3;c++) assert.equal(await h(2,c).textContent(),'Hello');
+    await press('v','ArrowDown','ArrowDown','Delete');
+    for (let c=0;c<3;c++) assert.equal(await h(2,c).textContent(),'');
+    await press('u'); assert.equal(await h(2,0).textContent(),'Hello');
+    await press('H','p');
+    for (let c=0;c<3;c++) await waitText([c,2,0,0],'Hello');
+    await page.screenshot({path:'/tmp/ndcalc-cell-hypercursor.png'});
+  });
+  await check('native touchscreen pan/pinch in plane, 3D Stack, and 4D; captured Alt-wheel prevents browser defaults', async () => {
+    await create('touch gestures',4);
+    const client=await context.newCDPSession(page);
+    const touch=async(type,points)=>{await client.send('Input.dispatchTouchEvent',{type,touchPoints:points.map(([x,y],id)=>({x,y,id}))}); await press();};
+    const swipe=async locator=>{
+      const r=await locator.boundingBox(),x=r.x+r.width*.6,y=r.y+r.height*.6;
+      await touch('touchStart',[[x,y]]); await touch('touchMove',[[x-120,y-120]]); await touch('touchEnd',[]);
+    };
+    const pinch=async locator=>{
+      const r=await locator.boundingBox(),x=r.x+r.width*.5,y=r.y+r.height*.5;
+      await touch('touchStart',[[x-50,y],[x+50,y]]); await touch('touchMove',[[x-75,y],[x+75,y]]); await touch('touchEnd',[]);
+    };
+    const firstX=await page.locator('.sheet thead tr').first().locator('th').nth(2).textContent();
+    await swipe(page.locator('.grid-container'));
+    assert.notEqual(await page.locator('.sheet thead tr').first().locator('th').nth(2).textContent(),firstX);
+    await pinch(page.locator('.grid-container'));
+    assert.ok(Number(await page.locator('.sheet').evaluate(el=>getComputedStyle(el).zoom))>1);
+    await clickText('3D'); await clickText('Stack');
+    const rotation=await page.getByRole('slider',{name:'3D rotation'}).inputValue();
+    const before=await page.locator('.cube-stage').evaluate(el=>[el.scrollLeft,el.scrollTop]);
+    await swipe(page.locator('.cube-stage'));
+    assert.notDeepEqual(await page.locator('.cube-stage').evaluate(el=>[el.scrollLeft,el.scrollTop]),before);
+    assert.equal(await page.getByRole('slider',{name:'3D rotation'}).inputValue(),rotation);
+    const zoom=Number(await page.getByRole('slider',{name:'3D zoom'}).inputValue()); await pinch(page.locator('.cube-stage'));
+    assert.ok(Number(await page.getByRole('slider',{name:'3D zoom'}).inputValue())>zoom);
+    await clickText('4D');
+    for (const [axis,size] of [['X','8'],['Y','4'],['Z','4'],['W','4']]) {
+      await page.getByRole('spinbutton',{name:`4D ${axis} size`}).fill(size); await press();
+    }
+    await swipe(page.locator('.hyper-stage'));
+    assert.ok(await page.locator('.hyper-stage').evaluate(el=>el.scrollLeft>0 && el.scrollTop>0));
+    const z=Number(await page.getByRole('slider',{name:'4D zoom'}).inputValue()); await pinch(page.locator('.hyper-stage'));
+    assert.ok(Number(await page.getByRole('slider',{name:'4D zoom'}).inputValue())>z);
+    assert.equal(await page.locator('.hyper-stage').evaluate(el=>{const e=new WheelEvent('wheel',{deltaY:-120,altKey:true,bubbles:true,cancelable:true});el.dispatchEvent(e);return e.defaultPrevented;}),true);
+    await client.detach();
   });
   await check('realistic hypertables, animated formatting, and a live ledger control', async () => {
     await page.emulateMedia({reducedMotion:'no-preference'});

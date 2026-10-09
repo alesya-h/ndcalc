@@ -96,7 +96,8 @@
   ;; Orthographic projection: fit the rotated plane and the centered Z stack.
   (let [[nx ny nz] shape cell-width (if (:labels options) 128 64)
         row-height (if (:labels options) 50 32)
-        width (+ 168 (* nx cell-width)) height (+ 64 (* ny row-height))
+        width (if-let [cols (:column-widths options)] (+ 42 (or (:head-width options) 126) (reduce + cols)) (+ 168 (* nx cell-width)))
+        height (+ 64 (* ny row-height))
         angle (* (:rotation options) (/ js/Math.PI 180))
         tilt (* (:tilt options) (/ js/Math.PI 180))
         projected-width (+ 110 (* (abs (js/Math.cos angle)) width) (* (abs (js/Math.sin angle)) height))
@@ -104,6 +105,7 @@
                                   (+ (* (abs (js/Math.sin angle)) width) (* (abs (js/Math.cos angle)) height)))
                             (* (js/Math.sin tilt) (dec nz) (:gap options)))]
     {:width width :height height :cell-width cell-width :row-height row-height
+     :column-widths (:column-widths options) :head-width (:head-width options)
      :projected-width projected-width :projected-height projected-height
      :scale (* (/ (:zoom options) 100)
                (min 1 (/ (max 100 (- viewport-width 24)) projected-width)

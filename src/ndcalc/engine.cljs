@@ -99,28 +99,37 @@
       (and bounds (every? true? (map <= (:start bounds) coord (:end bounds))))))
 
 (defn block-shape [origin current]
-  (when-not (and (= (count origin) (count current))
-                 (every? safe-integer? origin) (every? safe-integer? current))
-    (fail "Selection corners must have matching numeric coordinates."))
-  (mapv #(inc (abs (- %1 %2))) origin current))
+  (if (and (hyperplane? origin) (hyperplane? current) (= (first (:hyperplane origin)) (first (:hyperplane current))))
+    [(inc (abs (- (second (:hyperplane origin)) (second (:hyperplane current)))))]
+    (do
+      (when-not (and (= (count origin) (count current))
+                     (every? safe-integer? origin) (every? safe-integer? current))
+        (fail "Selection corners must have matching numeric coordinates."))
+      (mapv #(inc (abs (- %1 %2))) origin current))))
 
 (defn block-size [origin current] (reduce * 1 (block-shape origin current)))
 
 (defn in-block? [origin current coord]
-  (and (not (named? origin)) (not (named? current)) (not (named? coord))
-       (not-any? hyperplane? [origin current coord])
-       (= (count origin) (count current) (count coord))
-       (every? true? (map #(<= (min %1 %2) %3 (max %1 %2)) origin current coord))))
+  (if (every? hyperplane? [origin current coord])
+    (let [[d a] (:hyperplane origin) [e b] (:hyperplane current) [f c] (:hyperplane coord)]
+      (and (= d e f) (<= (min a b) c (max a b))))
+    (and (not (named? origin)) (not (named? current)) (not (named? coord))
+         (not-any? hyperplane? [origin current coord])
+         (= (count origin) (count current) (count coord))
+         (every? true? (map #(<= (min %1 %2) %3 (max %1 %2)) origin current coord)))))
 
 (defn block-coords
   "Enumerate the inclusive n-dimensional box; the first dimension varies fastest."
   [origin current]
   (when (> (block-size origin current) max-block-size)
     (fail (str "Selections are limited to " max-block-size " cells.")))
-  (reduce (fn [coords [a b]]
-            (vec (for [value (range (min a b) (inc (max a b))) prefix coords]
-                   (conj prefix value))))
-          [[]] (map vector origin current)))
+  (if (hyperplane? origin)
+    (let [[d a] (:hyperplane origin) [_ b] (:hyperplane current)]
+      (mapv #(hash-map :hyperplane [d %]) (range (min a b) (inc (max a b)))))
+    (reduce (fn [coords [a b]]
+              (vec (for [value (range (min a b) (inc (max a b))) prefix coords]
+                     (conj prefix value))))
+            [[]] (map vector origin current))))
 
 (defn expression-source [source]
   ;; Persist the original shorthand, not its expansion.
@@ -143,6 +152,22 @@
   (when (str/blank? (:source cell)) (fail "Enter a JavaScript expression."))
   (expression-factory (:source cell))
   cell)
+
+(defn literal-string [cell]
+  ;; Recognize literals syntactically before evaluating. Never evaluate an
+  ;; arbitrary expression to decide how to present it in the editor.
+  (when (and (= "value" (:kind cell)) (string? (:source cell)))
+    (let [source (str/trim (:source cell))]
+      (when (re-matches #"(?:\"(?:[^\"\\]|\\[\s\S])*\"|'(?:[^'\\]|\\[\s\S])*'|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`)" source)
+        (try {:text ((js/Function. (str "\"use strict\"; return (" source "\n);")))}
+             (catch :default _ nil))))))
+
+(defn cell-width [doc coord] (get (:cell-widths doc) (coord-key (normalize-coord (:dimensions doc) coord))))
+(defn set-cell-width [doc coord width]
+  (when-not (or (nil? width) (and (safe-integer? width) (<= 35 width 2000)))
+    (fail "Cell width must be 35–2000 pixels, or Auto."))
+  (let [key (coord-key (normalize-coord (:dimensions doc) coord))]
+    (if width (assoc-in doc [:cell-widths key] width) (update doc :cell-widths dissoc key))))
 
 (defn stringify [v]
   (try
@@ -303,8 +328,11 @@
   (let [doc (assoc doc :dimensions n
                   :aliases (into {} (filter #(<= (key %) n) (:aliases doc)))
                   :cells (into {} (map (fn [[key cell]] [(coord-key (normalize-coord n (key-coord key))) cell]) (:cells doc))))
+        widths (into {} (keep (fn [[key width]]
+                                (try [(coord-key (normalize-coord n (key-coord key))) width]
+                                     (catch :default _ nil))) (:cell-widths doc)))
         queue (full-axis-queue doc)]
-    (assoc doc :view {:coord (normalize-coord n (take n (get-in doc [:view :coord])))
+    (assoc doc :cell-widths widths :view {:coord (normalize-coord n (take n (get-in doc [:view :coord])))
                      :axes queue :mapping (vec (take 2 (concat queue [0])))
                      :axis-order (vec (filter #(<= % n) (get-in doc [:view :axis-order])))
                      :expelled (vec (filter #(<= % n) (get-in doc [:view :expelled])))})))
@@ -370,6 +398,13 @@
                         (validate-cell! {:kind "value" :source (:coord rule)})
                         (validate-cell! {:kind "value" :source (:value rule)})
                         (assoc rule :id (str (random-uuid)))) (:rules doc))
+          widths (if (some? (aget raw "cell-widths")) (js-dictionary->map (aget raw "cell-widths")) {})
+          _ (when-not (map? widths) (fail "Invalid cell widths."))
+          widths (reduce (fn [acc [key width]]
+                           (let [coord (normalize-coord n (key-coord key)) canonical (coord-key coord)]
+                             (when-not (and (safe-integer? width) (<= 35 width 2000)) (fail "Invalid cell width."))
+                             (when (contains? acc canonical) (fail "Duplicate cell-width coordinate aliases."))
+                             (:cell-widths (set-cell-width {:dimensions n :cell-widths acc} coord width)))) {} widths)
           view (:view doc)
           coord (normalize-coord n (or (:coord view) []))
           mapping (or (:mapping view) (initial-mapping n))
@@ -395,7 +430,7 @@
         (fail "Invalid full axis queue."))
       (let [queue (full-axis-queue (assoc doc :view (assoc view :mapping mapping)))]
         {:id (str (random-uuid)) :title (:title doc) :dimensions n
-         :cells normalized :named names :hyperplanes headers :aliases aliases :rules rules :css (:css doc)
+         :cells normalized :named names :hyperplanes headers :aliases aliases :cell-widths widths :rules rules :css (:css doc)
          :createdAt (.now js/Date) :updatedAt (.now js/Date)
          :view {:coord coord :mapping (vec (take 2 (concat queue [0]))) :axes queue
                 :expelled expelled :axis-order axis-order}}))))

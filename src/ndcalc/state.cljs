@@ -7,7 +7,7 @@
             [ndcalc.preview :as preview]))
 
 (defonce app (r/atom {:route :loading :doc nil :documents [] :theme "system" :system-dark false
-                     :help false :panel :named :mode :normal :anchor nil
+                     :help false :panel :named :mode :normal :anchor nil :cursor :cell :hyper-dimension nil :plane-zoom 100
                      :named-focus nil :editor nil :dialog nil :command nil
                      :viewport [-1 -1] :grid-size [8 16] :view :plane
                      :cube-axes [1 2 3] :cube-options preview/default-options :cube-fit false :cube-initialized false
@@ -31,7 +31,18 @@
       (reset! runtime-cache {:key key :runtime (e/make-runtime doc)}))
     (:runtime @runtime-cache)))
 
-(defn coord [] (or (some-> (:named-focus @app) vector) (get-in @app [:doc :view :coord])))
+(declare mapping)
+(defn numeric-coord [] (get-in @app [:doc :view :coord]))
+(defn hyper-axis []
+  (when (#{:hyperrow :hypercolumn} (:cursor @app))
+    (or (:hyper-dimension @app) (nth (mapping) (if (= :hyperrow (:cursor @app)) 0 1)))))
+(defn coord []
+  (or (some-> (:named-focus @app) vector)
+      (when-let [d (hyper-axis)] {:hyperplane [d (e/axis-value (numeric-coord) d)]})
+      (numeric-coord)))
+(defn cycle-cursor! []
+  (swap! app assoc :cursor (case (:cursor @app) :hyperrow :hypercolumn :hypercolumn :cell :hyperrow)
+         :hyper-dimension nil :named-focus nil :anchor nil :mode :normal))
 (defn axis-queue [] (e/full-axis-queue (:doc @app)))
 (defn volume? [] (boolean (#{:cube :hypercube} (:view @app))))
 (defn view-rank [] (case (:view @app) :cube 3 :hypercube 4 2))
@@ -58,7 +69,7 @@
 
 (defn ensure-visible! []
   (when (and (:doc @app) (not (:named-focus @app)))
-    (let [[x y] (mapping) c (coord) [cols rows] (:grid-size @app)
+    (let [[x y] (mapping) c (numeric-coord) [cols rows] (:grid-size @app)
           [left top] (:viewport @app)
           a (e/axis-value c x) b (e/axis-value c y)
           fit (fn [start value size]
@@ -71,20 +82,37 @@
   (guard!
     #(let [c (e/normalize-coord (get-in @app [:doc :dimensions]) c)]
        (if (e/named? c)
-         (swap! app assoc :named-focus (first c) :anchor nil :mode :normal)
+         (swap! app assoc :named-focus (first c) :cursor :cell :hyper-dimension nil :anchor nil :mode :normal)
          (do
            (when (and extend? (nil? (:anchor @app)) (not (:named-focus @app)))
              (swap! app assoc :anchor (coord) :mode :visual))
            (when-not (or extend? (= :visual (:mode @app))) (swap! app assoc :anchor nil))
-           (swap! app (fn [s] (-> s (assoc :named-focus nil) (assoc-in [:doc :view :coord] c))))
+           (let [c (if-let [d (hyper-axis)] (e/set-axis (numeric-coord) d (e/axis-value c d)) c)]
+             (swap! app (fn [s] (-> s (assoc :named-focus nil) (assoc-in [:doc :view :coord] c)))))
            (ensure-visible!))))))
+
+(defn pick-cell! [c extend?]
+  (when (not= :cell (:cursor @app))
+    (swap! app assoc :cursor :cell :hyper-dimension nil :anchor nil :mode :normal))
+  (select! c extend?))
+(defn focus-hyperplane! [dimension coordinate orientation extend?]
+  (let [target (e/hyperplane-coord (:doc @app) dimension coordinate)
+        orientation (or orientation (if (= dimension (first (mapping))) :hyperrow :hypercolumn))
+        same? (and (= orientation (:cursor @app)) (= dimension (hyper-axis)))]
+    (when-not same? (swap! app assoc :anchor nil :mode :normal))
+    (when (and extend? (nil? (:anchor @app)))
+      (swap! app assoc :anchor {:hyperplane [dimension (e/axis-value (numeric-coord) dimension)]} :mode :visual))
+    (swap! app assoc :cursor orientation :hyper-dimension dimension :named-focus nil)
+    (swap! app update-in [:doc :view :coord] e/set-axis dimension (second (:hyperplane target)))
+    (ensure-visible!)))
 
 (defn move! [dx dy extend?]
   (if (:named-focus @app) (swap! app assoc :named-focus nil)
-    (let [[x y] (mapping) c (coord)]
-      (select! (-> c
-                   (e/set-axis x (+ (e/axis-value c x) dx))
-                   (e/set-axis y (+ (e/axis-value c y) dy))) extend?))))
+    (let [[x y] (mapping) c (numeric-coord)]
+      (when (or (nil? (hyper-axis)) (and (pos? x) (= x (hyper-axis)) (not (zero? dx)))
+                (and (pos? y) (= y (hyper-axis)) (not (zero? dy))))
+        (select! (-> c (e/set-axis x (+ (e/axis-value c x) dx))
+                      (e/set-axis y (+ (e/axis-value c y) dy))) extend?)))))
 
 (defn set-slice! [dimension value]
   (when (e/safe-integer? value)
@@ -117,7 +145,7 @@
 (defn move-slot! [slot delta extend?]
   (if-let [dimension (get (navigation-axes) (dec slot))]
     (let [c (get-in @app [:doc :view :coord])]
-      (when (pos? dimension)
+      (when (and (pos? dimension) (or (nil? (hyper-axis)) (= dimension (hyper-axis))))
         (select! (e/set-axis c dimension (+ (e/axis-value c dimension) delta)) extend?)))
     (notify! (str "No dimension in navigation slot " slot "."))))
 (defn move-depth! [delta] (move-slot! 3 delta false))
@@ -170,7 +198,7 @@
       (do
         (install-axis-prefix! (e/switch-dimension (mapping) d) true)
         (let [[x y] (mapping)]
-          (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
+          (swap! app assoc :viewport [(dec (e/axis-value (numeric-coord) x)) (dec (e/axis-value (numeric-coord) y))]))
         (ensure-visible!)))))
 
 (defn set-cube-axis! [axis d] (set-mapping! axis d))
@@ -215,47 +243,55 @@
     (formula-template (get-in @app [:doc :dimensions])
                       (or (:new-name editor) (some-> editor :coords first e/named?)))))
 
-(defn set-editor-kind! [kind]
-  (swap! app update :editor
-         (fn [editor]
-           (cond-> (assoc editor :kind kind :error nil)
-             (and (= kind "formula") (str/blank? (:source editor)))
-             (assoc :source (editor-template editor) :focus-source true)))))
+(defn present-editor [editor kind]
+  (let [old (:kind editor) source (:source editor)
+        source (cond (= old kind) source
+                     (= old "text") (js/JSON.stringify source)
+                     (= kind "text") (or (:text (e/literal-string {:kind "value" :source source})) source)
+                     :else source)]
+    (cond-> (assoc editor :kind kind :source source :error nil)
+      (and (= kind "formula") (or (str/blank? source) (and (= old "text") (str/blank? (:source editor)))))
+      (assoc :source (editor-template editor) :focus-source true))))
+(defn set-editor-kind! [kind] (swap! app update :editor present-editor kind))
+(defn make-editor [coords cell kind]
+  (let [editor {:coords coords :kind (:kind cell) :source (or (:source cell) "") :error nil
+                :width (or (e/cell-width (:doc @app) (first coords)) "")}
+        kind (or kind (when (e/literal-string cell) "text") (:kind cell) "value")]
+    (present-editor editor kind)))
 
 (defn open-editor! [kind]
   (if-not (editable?) (notify! "Open a table to edit.")
     (guard!
       #(let [coords (selected-coords) cell (e/cell-at (:doc @app) (first coords))
-             kind (or kind (:kind cell) "value")
-             editor {:coords coords :kind kind :source (or (:source cell) "") :error nil}
-             editor (if (and (= kind "formula") (str/blank? (:source editor)))
-                      (assoc editor :source (editor-template editor) :focus-source true) editor)]
+             editor (make-editor coords cell kind)]
          (swap! app assoc :editor editor :command nil)))))
 
 (defn open-hyperplane! [dimension coordinate kind]
   (guard! #(let [target (e/hyperplane-coord (:doc @app) dimension coordinate)
-                 cell (e/cell-at (:doc @app) target) kind (or kind (:kind cell) "value")
-                 editor {:coords [target] :kind kind :source (or (:source cell) "") :error nil}]
-             (swap! app assoc :editor
-                    (if (and (= kind "formula") (str/blank? (:source editor)))
-                      (assoc editor :source (editor-template editor) :focus-source true) editor)))))
+                 cell (e/cell-at (:doc @app) target)]
+             (swap! app assoc :editor (make-editor [target] cell kind)))))
 
 (defn new-named! []
   (if-not (editable?) (notify! "Open a table to create named cells.")
     (swap! app assoc :editor {:new-name true :name "" :kind "value" :source "" :error nil})))
 
 (defn save-editor! []
-  (let [{:keys [coords kind source new-name name]} (:editor @app)]
+  (let [{:keys [coords kind source new-name name width]} (:editor @app)]
     (try
-      (let [cell (e/validate-cell! {:kind kind :source source})
+      (let [cell (e/validate-cell! {:kind (if (= kind "text") "value" kind)
+                                    :source (if (= kind "text") (js/JSON.stringify source) source)})
             coords (if new-name [[(str/trim name)]] coords)]
         (when new-name
           (e/normalize-coord (get-in @app [:doc :dimensions]) (first coords))
           (when (contains? (get-in @app [:doc :named]) (str/trim name)) (e/fail "That name already exists.")))
-        (change! #(reduce (fn [d c] (e/put-cell d c cell)) % coords))
+        (let [width (when-not (or (nil? width) (= "" width)) (js/Number width))]
+          (change! #(reduce (fn [d c] (-> d (e/put-cell c cell) (e/set-cell-width c width))) % coords)))
         (swap! app assoc :editor nil :mode :normal :anchor nil)
         (notify! (str "Saved " (count coords) " cell" (when (> (count coords) 1) "s"))))
       (catch :default err (swap! app assoc-in [:editor :error] (.-message err))))))
+
+(defn set-cell-width! [target width]
+  (guard! #(change! (fn [doc] (e/set-cell-width doc target width)))))
 
 (defn clear! []
   (when (editable?)
@@ -265,8 +301,8 @@
 
 (defn clear-axis! [axis]
   (when (and (editable?) (not (:named-focus @app)))
-    (let [dimension (nth (mapping) axis) other (nth (mapping) (- 1 axis)) c (coord)]
-      (if (zero? dimension) (clear!)
+    (let [dimension (nth (mapping) axis) other (nth (mapping) (- 1 axis)) c (numeric-coord)]
+      (if (or (hyper-axis) (zero? dimension)) (clear!)
         (do
           (change! (fn [doc]
                      (update doc :cells
@@ -280,7 +316,7 @@
 (defn jump! [axis value]
   (when-not (e/safe-integer? value) (e/fail "Coordinate must be a safe integer."))
   (swap! app assoc :named-focus nil)
-  (select! (e/set-axis (coord) (nth (mapping) axis) value) false))
+  (select! (e/set-axis (numeric-coord) (nth (mapping) axis) value) false))
 (defn jump-row! [end? extend?]
   (when (= :plane (:view @app))
     (let [[x _] (mapping) c (get-in @app [:doc :view :coord])
@@ -303,35 +339,41 @@
 
 (defn yank! []
   (guard!
-    #(let [coords (selected-coords) named? (:named-focus @app)
-           origin (first coords)
-           axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions])
-                                            (view-axes)))
+    #(let [coords (selected-coords) origin (first coords) hyper? (e/hyperplane? origin) named? (e/named? origin)
+           axes (if (or hyper? named?) [] (clipboard-axes (get-in @app [:doc :dimensions]) (view-axes)))
            shape (if named? [] (e/block-shape origin (last coords)))
            entries (mapv (fn [c]
-                           {:offset (mapv (fn [axis] (- (e/axis-value c axis) (e/axis-value origin axis))) axes)
-                            :cell (e/cell-at (:doc @app) c)}) coords)]
-       (swap! app assoc :clipboard {:cells entries :shape (mapv (fn [axis] (if (zero? axis) 1 (nth shape (dec axis)))) axes)}
+                           {:offset (if hyper? [(- (second (:hyperplane c)) (second (:hyperplane origin)))]
+                                     (mapv (fn [axis] (- (e/axis-value c axis) (e/axis-value origin axis))) axes))
+                            :cell (e/cell-at (:doc @app) c) :width (e/cell-width (:doc @app) c)}) coords)]
+       (swap! app assoc :clipboard {:kind (if hyper? :hyperplane :cells) :cells entries
+                                    :shape (if hyper? shape (mapv (fn [axis] (if (zero? axis) 1 (nth shape (dec axis)))) axes))}
               :anchor nil :mode :normal)
        (notify! (str "Copied " (count coords) " cell(s); p to paste.")))))
 
 (defn paste! []
   (when (editable?)
     (guard!
-      #(if-let [{:keys [cells shape]} (:clipboard @app)]
-         (let [c (coord) named? (e/named? c)
-               axes (if named? [] (clipboard-axes (get-in @app [:doc :dimensions])
-                                                (view-axes)))]
-           (when (some (fn [[index size]] (and (> size 1) (zero? (get axes index 0))))
-                       (map-indexed vector shape))
+      #(if-let [{:keys [cells shape kind]} (:clipboard @app)]
+         (let [c (coord) named? (e/named? c) hyper? (e/hyperplane? c)
+               line? (or hyper? (= kind :hyperplane))
+               axes (if (or hyper? named?) [] (clipboard-axes (get-in @app [:doc :dimensions]) (view-axes)))
+               line-axis (first (filter pos? axes))]
+           (when (or (and line? (> (count (filter (fn [size] (> size 1)) shape)) 1))
+                     (and named? (> (count cells) 1))
+                     (and hyper? (zero? (first (:hyperplane c))) (> (count cells) 1))
+                     (and (= kind :hyperplane) (not hyper?) (not named?) (nil? line-axis) (> (count cells) 1))
+                     (and (not line?) (some (fn [[index size]] (and (> size 1) (zero? (get axes index 0))))
+                                           (map-indexed vector shape))))
              (e/fail "This selection won't fit in the target dimensions or named cell."))
            (change! (fn [doc]
-                      (reduce (fn [d {:keys [offset cell]}]
-                                (let [target (if named? c
-                                               (reduce (fn [at [index axis]]
-                                                         (e/set-axis at axis (+ (e/axis-value c axis) (get offset index 0))))
-                                                       c (map-indexed vector axes)))]
-                                  (e/put-cell d target cell))) doc cells)))
+                      (reduce (fn [d [index {:keys [offset cell width]}]]
+                                (let [target (cond named? c
+                                                   hyper? (e/hyperplane-coord d (first (:hyperplane c)) (+ (second (:hyperplane c)) index))
+                                                   line? (if line-axis (e/set-axis c line-axis (+ (e/axis-value c line-axis) index)) c)
+                                                   :else (reduce (fn [at [i axis]] (e/set-axis at axis (+ (e/axis-value c axis) (get offset i 0))))
+                                                                 c (map-indexed vector axes)))]
+                                  (-> d (e/put-cell target cell) (e/set-cell-width target width)))) doc (map-indexed vector cells))))
            (notify! "Pasted. Formulas keep their source and use their new coordinates."))
          (notify! "Nothing copied yet. Use y to copy a cell or block.")))))
 
@@ -359,13 +401,13 @@
                    (assoc doc :rules (vec (concat (subvec remaining 0 to) [item] (subvec remaining to))))))))))
 
 (defn open-document! [doc]
-  (swap! app assoc :doc doc :route :editor :anchor nil :mode :normal :named-focus nil
+  (swap! app assoc :doc doc :route :editor :anchor nil :mode :normal :named-focus nil :cursor :cell :hyper-dimension nil
          :editor nil :rule-editor nil :dialog nil :command nil :undo [] :redo [] :view :plane
          :cube-axes [1 2 3] :cube-fit false :cube-initialized false
          :hyper-axes [1 2 3 4] :hyper-fit false :hyper-initialized false :css-draft (:css doc))
   (install-axis-queue! (axis-queue) false)
   (let [[x y] (mapping)]
-    (swap! app assoc :viewport [(dec (e/axis-value (coord) x)) (dec (e/axis-value (coord) y))]))
+    (swap! app assoc :viewport [(dec (e/axis-value (numeric-coord) x)) (dec (e/axis-value (numeric-coord) y))]))
   (ensure-visible!))
 
 (defn open-example! [make]
@@ -453,21 +495,35 @@
   (when (volume?)
     (let [cube? (= :cube (:view @app)) options ((if cube? cube-options hyper-options))]
       ((if cube? set-cube-option! set-hyper-option!) :labels (not (:labels options))))))
+(defn view-zoom [] (case (:view @app) :cube (:zoom (cube-options)) :hypercube (:zoom (hyper-options)) (or (:plane-zoom @app) 100)))
+(defn set-view-zoom! [value]
+  (let [value (max 25 (min 200 (js/Math.round value)))]
+    (case (:view @app) :cube (set-cube-option! :zoom value) :hypercube (set-hyper-option! :zoom value)
+          (swap! app assoc :plane-zoom value))))
+(defn pan-plane! [dx dy]
+  (let [[x y] (mapping) limit js/Number.MAX_SAFE_INTEGER]
+    (swap! app update :viewport
+           (fn [[a b]] [(if (zero? x) 0 (max (- limit) (min (- limit 24) (+ a dx))))
+                        (if (zero? y) 0 (max (- limit) (min (- limit 40) (+ b dy))))]))))
+(defn consume! [event]
+  (.preventDefault event)
+  (when (fn? (.-stopPropagation event)) (.stopPropagation event)))
 (defn preview-wheel! [event]
   (let [cube? (= :cube (:view @app))
         key (cond (.-altKey event) :zoom
                   (and cube? (.-ctrlKey event)) :gap
                   (and cube? (.-shiftKey event) (= "stack" (:layout (cube-options)))) :transparency)]
-   (when (and key (volume?) (not-any? @app [:editor :rule-editor :dialog]))
-    (.preventDefault event)
-    (let [options ((if cube? cube-options hyper-options))
+   (when (and key (editable?) (not-any? @app [:editor :rule-editor :dialog]))
+    (consume! event)
+    (let [options (case (:view @app) :cube (cube-options) :hypercube (hyper-options) {:zoom (view-zoom)})
           raw (if (zero? (.-deltaY event)) (.-deltaX event) (.-deltaY event))
           delta (* raw (case (.-deltaMode event) 1 16 2 240 1))
           step (* (js/Math.sign delta) (max 1 (min 10 (js/Math.round (/ (abs delta) 12)))))
           [low high] (get preview/option-ranges key)
           value (max low (min high (+ (get options key) (* step (if (= key :transparency) 1 -1)))))]
       (when-not (zero? delta)
-        ((if cube? set-cube-option! set-hyper-option!) key value))))))
+        (if (= key :zoom) (set-view-zoom! value) (set-cube-option! key value)))
+      true))))
 (defn permute-axes! []
   (let [old-axes (view-axes) axes (preview/next-permutation old-axes)]
     (if (volume?) (set-volume-axes! (:view @app) axes true)
@@ -506,7 +562,8 @@
           (when (typing-target? event) (.blur (.-target event))))
       (or (:editor state) (:rule-editor state) (:dialog state)) nil
       (typing-target? event) nil
-      (and (not shift) (= "BUTTON" (.. event -target -tagName)) (#{"Enter" " "} key)) nil
+      (and (not shift) (not alt) (not ctrl) (= "BUTTON" (.. event -target -tagName))
+           (not (some-> (.-target event) (aget "dataset") (aget "hyperplane"))) (#{"Enter" " "} key)) nil
       (and (not ctrl) (not alt) (#{"h" "?"} key))
       (do (.preventDefault event) (swap! app update :help not))
       (not= :editor (:route state)) nil
@@ -529,11 +586,13 @@
       (and ctrl (not alt) (= (str/lower-case key) "z")) (do (.preventDefault event) (undo! shift))
       (and ctrl (not alt) (= (str/lower-case key) "y")) (do (.preventDefault event) (undo! true))
       (and ctrl (not alt) (= (str/lower-case key) "v")) (do (.preventDefault event) (toggle-visual!))
+      (and alt (= key "Enter")) (do (consume! event) (open-editor! "text"))
+      (= key "Alt") (consume! event)
       (or ctrl alt) nil
       (re-matches #"[0-9]" key) (do (.preventDefault event) (switch! (js/Number key)))
       :else
       (when (#{"Tab" "Enter" "i" "I" "f" "F" "l" "v" "y" "p" "u" "Delete" "Backspace"
-               "g" "G" "b" "B" "e" "E" "d" "D" "n" "N" "c" "r" "t" "T"} key)
+               "g" "G" "b" "B" "e" "E" "d" "D" "n" "N" "c" "r" "t" "T" "H"} key)
         (.preventDefault event)
         (case key
           "Tab" (move! (if shift -1 1) 0 false)
@@ -548,7 +607,7 @@
           "d" (clear-axis! 0) "D" (clear-axis! 1)
           "n" (toggle-panel! :named) "N" (new-named!)
           "c" (toggle-panel! :css) "r" (toggle-panel! :rules)
-          "t" (cycle-view!) "T" (permute-axes!) nil)))))
+          "t" (cycle-view!) "T" (permute-axes!) "H" (cycle-cursor!) nil)))))
 
 (defn install-persistence! []
   (add-watch app :persist
@@ -564,9 +623,10 @@
                                          (swap! app assoc :save-status "Save failed")
                                          (report! err)))))))
                (when (or (not= (:theme old) (:theme new))
+                         (not= (:plane-zoom old) (:plane-zoom new))
                          (not= (:cube-options old) (:cube-options new))
                          (not= (:hyper-options old) (:hyper-options new)))
-                 (.catch (db/save-preferences! {:theme (:theme new)
+                 (.catch (db/save-preferences! {:theme (:theme new) :plane-zoom (:plane-zoom new)
                                                :cube-options (merge preview/default-options (:cube-options new))
                                                :hyper-options (merge preview/hyper-default-options (:hyper-options new))}) report!)))))
 
@@ -575,6 +635,8 @@
       (.then (fn [_] (db/preferences!)))
       (.then (fn [prefs]
                (when (#{"system" "dark" "light"} (:theme prefs)) (swap! app assoc :theme (:theme prefs)))
+               (when (and (e/safe-integer? (:plane-zoom prefs)) (<= 25 (:plane-zoom prefs) 200))
+                 (swap! app assoc :plane-zoom (:plane-zoom prefs)))
                (swap! app assoc :cube-options (preview/restore-options (:cube-options prefs))
                                 :hyper-options (preview/restore-options (:hyper-options prefs) preview/hyper-default-options))
                (install-persistence!)

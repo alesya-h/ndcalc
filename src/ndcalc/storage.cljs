@@ -50,6 +50,7 @@
                              doc (js->clj raw :keywordize-keys true)]
                          (assoc doc
                                 :aliases (engine/decode-aliases (.-aliases raw))
+                                :cell-widths (or (engine/js-dictionary->map (aget raw "cell-widths")) {})
                                 :hyperplanes (into {} (map (fn [k] [k (js->clj (aget (.-hyperplanes raw) k) :keywordize-keys true)])
                                                            (if (.-hyperplanes raw) (js/Object.keys (.-hyperplanes raw)) #js [])))
                                 :cells (into {} (map (fn [[k v]] [k (js->clj v :keywordize-keys true)])

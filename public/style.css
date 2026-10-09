@@ -57,7 +57,7 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .dim-chip.active .axis-tag {color:var(--accent);}
 .dim-chip input {width:49px; height:24px; border:0; border-left:1px solid var(--line); background:none; padding:2px 5px 2px 7px; font-size:15px;}
 .dim-chip.inactive input {color:var(--muted);}
-.dimension-settings {color:var(--muted); border-style:dashed; background:none; font-size:13px;}
+.dimension-settings {color:var(--muted); background:none; border-color:transparent; font-size:14px; flex-shrink:0; padding:3px 0;}
 .dim-chip>b {padding:5px 8px;}
 .dim-chip>span {padding-right:8px;}
 .editor-body {flex:1; min-height:0; display:flex;}
@@ -92,7 +92,7 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .hyperplane-edit:focus-visible,.hyperplane-edit:hover {outline:2px solid var(--accent); outline-offset:-2px;}
 .hyperplane-edit .cell-text {font-size:15px; display:block;}
 .hyperplane-placeholder {position:absolute; left:8px; color:var(--faint); pointer-events:none;}
-.row-value {position:sticky!important; left:46px; z-index:1;}
+.row-value {position:sticky!important; left:46px; z-index:2;}
 .volume-coordinate,.volume-corner {display:flex; align-items:center; justify-content:center; color:var(--muted); background:var(--raised); font:12px 'IBM Plex Mono',monospace; overflow:hidden; white-space:nowrap; border:1px solid var(--line-subtle);}
 .cube-no-labels .hyperplane-edit .cell-text,.cube-no-labels .hyperplane-edit .formula-dot {display:block;}
 .axis-alias-fields {display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;}
@@ -104,17 +104,28 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .corner span {color:var(--faint); opacity:.75;}
 .sheet th.current-axis {color:var(--accent); background:var(--raised);}
 .cell-content {display:flex; align-items:center; gap:5px; width:100%; min-width:0; min-height:34px; padding:4px 8px;}
-.cell-text {font-size:15px; line-height:22px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; min-width:0; flex:1;}
+.cell-text {font-size:15px; line-height:22px; max-height:22px; overflow:hidden; white-space:pre; text-overflow:ellipsis; min-width:0; flex:1;}
 .formula-dot {font-family:Georgia,serif; color:var(--accent); opacity:.65; font-size:15px; flex-shrink:0;}
 .out-of-bounds {background:color-mix(in srgb,var(--bg) 78%,var(--grid));}
 .out-of-bounds .cell-content {opacity:.33;}
 .sheet td:hover,.sheet td.selected {background:var(--accent-soft);}
-.sheet td.current {background:var(--accent-soft); outline:2px solid var(--accent); outline-offset:-2px; z-index:1;}
-.sheet td.current:after {content:''; position:absolute; bottom:0; right:0; width:5px; height:5px; background:var(--accent);}
+.sheet td.current {background:var(--accent-soft); z-index:1;}
+.cursor-secondary::before,.selected::before {content:''; position:absolute; inset:0; border:1px solid var(--accent); opacity:.65; z-index:10; pointer-events:none;}
+.cursor-primary::before {border-width:2px!important; opacity:1!important;}
+.selected::before {border-width:2px; opacity:1; border-color:var(--green);}
+.corner-diagonal {position:relative; background:linear-gradient(to bottom left,transparent calc(50% - .5px),var(--line) 50%,transparent calc(50% + .5px))!important;}
+.width-dot {position:absolute; bottom:3px; right:3px; width:4px; height:4px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 1px var(--surface); z-index:11; pointer-events:none;}
+.cell-resize {position:absolute; right:0; bottom:0; width:7px; height:100%; z-index:12; cursor:ew-resize; touch-action:none;}
+.cell-resize:hover {background:color-mix(in srgb,var(--accent) 25%,transparent);}
+.resize-size {position:absolute; right:7px; bottom:0; padding:2px 4px; background:var(--raised); color:var(--accent); font:12px 'IBM Plex Mono',monospace; white-space:nowrap; pointer-events:none;}
+.cell-width-control {display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:13px; color:var(--muted);}
+.cell-width-control input {width:74px; background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:3px;}
+.cursor-mode {color:var(--accent); font:12px 'IBM Plex Mono',monospace; padding:0;}
+.grid-container,.cube-slices,.hyper-stage {touch-action:none; overscroll-behavior:none;}
 .sheet td.current .cell-content {opacity:1;}
 .cell-error .cell-text {color:var(--red);}
 .format-warning {color:var(--red); font-size:13px;}
-.null-x .sheet {width:240px;}
+.null-x .sheet {min-width:81px;}
 .null-y {background:repeating-linear-gradient(0deg,transparent,transparent 34px,var(--line-subtle) 35px);}
 .inspector {width:320px; flex-shrink:0; border-left:1px solid var(--line); background:var(--surface); display:flex; flex-direction:column; min-height:0;}
 .inspector-tabs {display:flex; align-items:stretch; height:36px; flex-shrink:0; border-bottom:1px solid var(--line); padding:0 6px; gap:4px;}
@@ -132,7 +143,7 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .panel-heading p {color:var(--faint); font-size:13px; margin-top:2px; line-height:1.4;}
 .panel-heading .button {border-color:transparent;}
 .named-list {display:flex; flex-direction:column; gap:6px;}
-.named-card {border:1px solid var(--line); border-radius:5px; background:var(--bg); overflow:hidden;}
+.named-card {position:relative; flex-shrink:0; border:1px solid var(--line); border-radius:5px; background:var(--bg); overflow:hidden;}
 .named-card.active {border-color:var(--accent);}
 .named-card-top {display:flex; align-items:center; padding:4px 5px 0 8px; gap:3px;}
 .named-name {font-family:'IBM Plex Mono',monospace; font-size:14px; text-align:left; flex:1; min-width:0; padding:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -260,7 +271,7 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .cube-with-labels .cube-cell .cell-content {padding-bottom:14px;}
 .cube-no-labels .cube-cell .cell-text,.cube-no-labels .formula-dot,.cube-no-labels .cube-coord {display:none;}
 .cube-coord {position:absolute; bottom:3px; left:6px; color:var(--muted); font-size:11px; pointer-events:none;}
-.cube-cell.cube-current,.cube-cell.selected {outline:2px solid var(--accent); outline-offset:-2px;}
+.cube-cell.cube-current,.cube-cell.selected {z-index:1;}
 .cube-layer-label {position:absolute; top:0; right:calc(100% + 6px); white-space:nowrap; font:13px 'IBM Plex Mono',monospace; color:var(--accent); padding:4px 6px; background:var(--surface); border:1px solid var(--line); border-radius:4px;}
 .cube-slices {flex:1; min-height:0; overflow:auto; display:flex; flex-wrap:wrap; align-content:flex-start; align-items:flex-start; gap:16px; padding:10px;}
 .cube-slice {position:relative; flex:0 0 auto;}
@@ -274,11 +285,12 @@ code,kbd,.coordinate-label,.cell-source,.cell-text,.bounds-label,.dim-chip input
 .hyper-column-label {position:sticky; top:0; z-index:3; height:28px;}
 .hyper-column-value {position:sticky; top:38px; z-index:3; height:36px;}
 .hyper-row-value {position:sticky; left:106px; z-index:2; align-self:stretch;}
+.hyper-row-value .hyperplane-edit {position:sticky; top:80px; height:36px;}
 .hyper-corner.value-corner {top:38px; height:36px;}
 .hyper-row-label {width:96px; overflow:hidden; position:sticky; left:0; z-index:2; align-self:stretch; display:flex; align-items:center;}
 .hyper-corner {position:sticky; top:0; left:0; z-index:4;}
 .hyper-panel {min-width:0;}
-@media (max-width:1100px) {.save-state {display:none;} .document-title {max-width:190px;} .inspector {width:280px;} .dimension-settings {font-size:0; gap:0;} .dimension-settings svg {width:18px;} .plane-description {display:none;} .bounds-label {max-width:240px;}}
+@media (max-width:1100px) {.save-state {display:none;} .document-title {max-width:190px;} .inspector {width:280px;} .dimension-settings {font-size:13px;} .plane-description {display:none;} .bounds-label {max-width:240px;}}
 @media (max-width:800px) {.brand {font-size:19px; gap:5px;} .topbar {gap:6px;} .topbar-left {gap:7px;} .document-title {max-width:145px; font-size:15px;} .topbar-right {gap:5px;} .topbar-right .button>span {display:none;} .topbar-right .button {width:30px; height:30px; padding:5px;} .dim-chip button {padding-inline:6px;} .dim-chip input {width:44px;} .inspector {width:240px;} .inspector-tabs {gap:0; padding:0 4px;} .inspector-tabs>button {font-size:13px; padding-inline:6px;} .named-card-top .cell-kind {display:none;} .toolbar-divider {display:none;} .toolbar-left {gap:5px;} .toolbar-right {gap:5px;} .toolbar-right>.button {display:none;} .cell-bar .cell-kind {display:none;} .help-sidebar {position:absolute; top:44px; bottom:0; left:0; z-index:20; width:280px; box-shadow:var(--shadow);} .status-right {display:none;} .cube-controls {gap:6px;}}
 @media (max-width:560px) {.inspector {width:185px;} .inspector-tabs {padding:0 2px;} .inspector-tabs>button {font-size:13px; padding:0 4px;} .tab-count {display:none;} .panel-heading h2 {font-size:15px;} .named-card-top {padding-left:6px;} .named-name {font-size:13px;} .named-card .tiny {width:20px;} .brand>span,.breadcrumb-slash,.topbar-left>.dimension-badge {display:none;} .document-title {max-width:115px;} .topbar-right .import-button {display:none;} .toolbar-left {gap:4px;} .axis-select select {width:55px; padding:2px; font-size:13px;} .segmented button {padding:3px 6px; font-size:0; gap:0;} .cell-source,.coordinate-label {font-size:13px;} .rule-top {flex-wrap:wrap;} .rule-top .rule-name {min-width:70px;} .rule-order {display:none;} .kind-picker small {display:none;} .status-hint {font-size:12px; overflow:hidden; text-overflow:ellipsis;} .status-left {gap:6px;} .cube-controls .axis-select select {width:50px;} .volume-tag {display:none;} .document-card-footer>span {display:none;}}
 @media (prefers-reduced-motion:reduce) {*,*:before,*:after {transition:none!important; animation:none!important;}}

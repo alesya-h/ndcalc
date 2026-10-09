@@ -8,7 +8,8 @@
     "build": "shadow-cljs release app",
     "test": "shadow-cljs compile test && node target/tests.js",
     "serve": "node scripts/serve.mjs",
-    "test:e2e": "node scripts/browser-test.mjs"
+    "test:e2e": "node scripts/browser-test.mjs",
+    "test:firefox": "node scripts/firefox-test.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",
